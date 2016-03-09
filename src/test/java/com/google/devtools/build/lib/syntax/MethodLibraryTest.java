@@ -442,11 +442,31 @@ public class MethodLibraryTest extends EvaluationTestCase {
   }
 
   @Test
+  public void testGetAttrMissingField() throws Exception {
+    new SkylarkTest()
+        .testIfExactError(
+            "Object of type 'string' has no attribute \"not_there\"",
+            "getattr('a string', 'not_there')")
+        .testStatement("getattr('a string', 'not_there', 'use this')", "use this");
+  }
+
+  @Test
+  public void testGetAttrWithMethods() throws Exception {
+    String msg =
+        "Object of type 'string' has no attribute \"count\", however, "
+            + "a method of that name exists";
+    new SkylarkTest()
+        .testIfExactError(msg, "getattr('a string', 'count')")
+        .testIfExactError(msg, "getattr('a string', 'count', 'unused default')");
+  }
+
+  @Test
   public void testDir() throws Exception {
-    new SkylarkTest().testStatement(
-        "str(dir({}))",
-        "[\"$index\", \"clear\", \"get\", \"items\", \"keys\","
-        + " \"pop\", \"popitem\", \"setdefault\", \"values\"]");
+    new SkylarkTest()
+        .testStatement(
+            "str(dir({}))",
+            "[\"$index\", \"clear\", \"get\", \"items\", \"keys\","
+                + " \"pop\", \"popitem\", \"setdefault\", \"update\", \"values\"]");
   }
 
   @Test
@@ -1357,6 +1377,16 @@ public class MethodLibraryTest extends EvaluationTestCase {
             + "if d.popitem() != (3, 'baz'): fail('popitem 3')\n"
             + "if d != {}: fail('popitem 4')\n"
             + "d.popitem()");
+  }
+
+  @Test
+  public void testDictionaryUpdate() throws Exception {
+    new BothModesTest()
+        .setUp("foo = {'a': 2}")
+        .testEval("foo.update({'b': 4}); foo", "{'a': 2, 'b': 4}");
+    new BothModesTest()
+        .setUp("foo = {'a': 2}")
+        .testEval("foo.update({'a': 3, 'b': 4}); foo", "{'a': 3, 'b': 4}");
   }
 
   @Test

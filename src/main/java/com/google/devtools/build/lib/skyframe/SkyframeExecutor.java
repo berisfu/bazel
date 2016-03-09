@@ -32,7 +32,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Range;
-import com.google.common.collect.Sets;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.ActionCacheChecker;
@@ -1148,7 +1147,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       skyKeys.add(ConfiguredTargetValue.key(key.getLabel(), configs.get(key)));
       for (Aspect aspect : key.getAspects()) {
         skyKeys.add(
-            ConfiguredTargetFunction.createAspectKey(key.getLabel(), configs.get(key), aspect));
+            ConfiguredTargetFunction.createAspectKey(
+                key.getLabel(), configs.get(key), configs.get(key), aspect));
       }
     }
 
@@ -1169,7 +1169,8 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
 
       for (Aspect aspect : key.getAspects()) {
         SkyKey aspectKey =
-            ConfiguredTargetFunction.createAspectKey(key.getLabel(), configs.get(key), aspect);
+            ConfiguredTargetFunction.createAspectKey(
+                key.getLabel(), configs.get(key), configs.get(key), aspect);
         if (result.get(aspectKey) == null) {
           continue DependentNodeLoop;
         }
@@ -1410,40 +1411,6 @@ public abstract class SkyframeExecutor implements WalkableGraphFactory {
       }
 
       return buildDriver.evaluate(valueNames, keepGoing, parallelThreads, eventHandler);
-    }
-
-    public Set<Package> retrievePackages(
-        final EventHandler eventHandler, Set<PackageIdentifier> packageIds) {
-      final List<SkyKey> valueNames = new ArrayList<>();
-      for (PackageIdentifier pkgId : packageIds) {
-        valueNames.add(PackageValue.key(pkgId));
-      }
-
-      try {
-        return callUninterruptibly(
-            new Callable<Set<Package>>() {
-              @Override
-              public Set<Package> call() throws Exception {
-                EvaluationResult<PackageValue> result =
-                    buildDriver.evaluate(
-                        valueNames,
-                        false,
-                        ResourceUsage.getAvailableProcessors(),
-                        eventHandler);
-                Preconditions.checkState(
-                    !result.hasError(), "unexpected errors: %s", result.errorMap());
-                Set<Package> packages = Sets.newHashSet();
-                for (PackageValue value : result.values()) {
-                  Package pkg = value.getPackage();
-                  Preconditions.checkState(!pkg.containsErrors(), pkg.getName());
-                  packages.add(pkg);
-                }
-                return packages;
-              }
-            });
-      } catch (Exception e) {
-        throw new IllegalStateException(e);
-      }
     }
   }
 

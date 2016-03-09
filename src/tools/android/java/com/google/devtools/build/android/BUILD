@@ -42,7 +42,10 @@ java_binary(
 
 java_library(
     name = "android_builder_lib",
-    srcs = glob(["*.java"]),
+    srcs = glob([
+        "*.java",
+        "xml/*.java",
+    ]),
     deps = [
         "//src/main/java/com/google/devtools/common/options",
         "//src/main/protobuf:package_manifest_java_proto",
@@ -53,4 +56,15 @@ java_library(
         "//third_party:jsr305",
         "//third_party:protobuf",
     ],
+)
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]) + [
+        "//src/tools/android/java/com/google/devtools/build/android/ideinfo:srcs",
+        "//src/tools/android/java/com/google/devtools/build/android/idlclass:srcs",
+        "//src/tools/android/java/com/google/devtools/build/android/incrementaldeployment:srcs",
+        "//src/tools/android/java/com/google/devtools/build/android/ziputils:srcs",
+    ],
+    visibility = ["//src:__pkg__"],
 )

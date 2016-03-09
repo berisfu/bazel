@@ -1,4 +1,4 @@
-// Copyright 2014 The Bazel Authors. All rights reserved.
+// Copyright 2016 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 /**
  * Helper class for setting up a proxy server for network communication
  *
@@ -35,7 +34,8 @@ public class ProxyHelper {
   /**
    * This method takes a String for the resource being requested and sets up a proxy to make
    * the request if HTTP_PROXY and/or HTTPS_PROXY environment variables are set.
-   * @param requestedUrl The url for the remote resource that may need to be retrieved through a proxy
+   * @param requestedUrl The url for the remote resource that may need to be retrieved through a
+   *   proxy
    * @return Proxy
    * @throws IOException
    */
@@ -50,9 +50,10 @@ public class ProxyHelper {
   }
 
   /**
-   * This method takes a proxyAddress as a String (ex. http://userId:password@proxyhost.domain.com:8000)
-   * and sets JVM arguments for http and https proxy as well as returns a java.net.Proxy object for optional use.
-   * 
+   * This method takes a proxyAddress as a String (ex.
+   * http://userId:password@proxyhost.domain.com:8000) and sets JVM arguments for http and https
+   * proxy as well as returns a java.net.Proxy object for optional use.
+   *
    * @param proxyAddress The fully qualified address of the proxy server
    * @return Proxy
    * @throws IOException
@@ -76,12 +77,13 @@ public class ProxyHelper {
     final String password = matcher.group(4);
     final String hostname = matcher.group(5);
     final String portRaw = matcher.group(6);
-    
+
     String cleanProxyAddress = proxyAddress;
     if (idAndPassword != null) {
-      cleanProxyAddress = proxyAddress.replace(idAndPassword, ""); // Used to remove id+pwd from logging
+      cleanProxyAddress =
+          proxyAddress.replace(idAndPassword, ""); // Used to remove id+pwd from logging
     }
-        
+
     boolean https;
     switch (protocol) {
       case "https":
@@ -93,9 +95,9 @@ public class ProxyHelper {
       default:
         throw new IOException("Invalid proxy protocol for " + cleanProxyAddress);
     }
-    
+
     int port = https ? 443 : 80; // Default port numbers
-    
+
     if (portRaw != null) {
       try {
         port = Integer.parseInt(portRaw);
@@ -115,9 +117,9 @@ public class ProxyHelper {
         throw new IOException("No password given for proxy " + cleanProxyAddress);
       }
 
-      // We need to make sure the proxy password is not url encoded; some special characters in proxy passwords
-      // require url encoding for shells and other tools to properly consume.
-      String decodedPassword = URLDecoder.decode(password, "UTF-8");
+      // We need to make sure the proxy password is not url encoded; some special characters in
+      // proxy passwords require url encoding for shells and other tools to properly consume.
+      final String decodedPassword = URLDecoder.decode(password, "UTF-8");
       System.setProperty("http.proxyUser", username);
       System.setProperty("http.proxyPassword", decodedPassword);
       System.setProperty("https.proxyUser", username);
@@ -125,7 +127,7 @@ public class ProxyHelper {
 
       Authenticator.setDefault(
           new Authenticator() {
-        	@Override
+            @Override
             public PasswordAuthentication getPasswordAuthentication() {
               return new PasswordAuthentication(username, decodedPassword.toCharArray());
             }

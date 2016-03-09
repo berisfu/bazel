@@ -517,7 +517,7 @@ public class ObjcRuleClasses {
           .add(attr("$xcodegen", LABEL).cfg(HOST).exec()
               .value(env.getToolsLabel("//tools/objc:xcodegen")))
           .add(attr("$dummy_source", LABEL)
-              .value(env.getToolsLabel("//tools/objc:objc_dummy.m")))
+              .value(env.getToolsLabel("//tools/objc:objc_dummy.mm")))
           .build();
     }
     @Override
@@ -639,8 +639,11 @@ public class ObjcRuleClasses {
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(pch) -->
            Header file to prepend to every source file being compiled (both arc
            and non-arc).
-           Note that the file will not be precompiled - this is simply a
-           convenience, not a build-speed enhancement.
+           Use of pch files is actively discouraged in BUILD files, and this should be
+           considered deprecated. Since pch files are not actually precompiled this is not
+           a build-speed enhancement, and instead is just a global dependency. From a build
+           efficiency point of view you are actually better including what you need directly
+           in your sources where you need it.
            <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("pch", LABEL).direct_compile_time_input().allowedFileTypes(FileType.of(".pch")))
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(deps) -->
@@ -824,8 +827,12 @@ public class ObjcRuleClasses {
       return RuleDefinition.Metadata.builder()
           .name("$objc_bundling_rule")
           .type(RuleClassType.ABSTRACT)
-          .ancestors(OptionsRule.class, ResourceToolsRule.class, XcrunRule.class,
-              AppleToolchain.RequiresXcodeConfigRule.class)
+          .ancestors(
+              AppleToolchain.RequiresXcodeConfigRule.class,
+              OptionsRule.class,
+              ResourcesRule.class,
+              ResourceToolsRule.class,
+              XcrunRule.class)
           .build();
     }
   }
@@ -979,7 +986,7 @@ public class ObjcRuleClasses {
     @Override
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
-          /* <!-- #BLAZE_RULE($objc_signing_rule).ATTRIBUTE(ipa_post_processor) -->
+          /* <!-- #BLAZE_RULE($objc_ipa_rule).ATTRIBUTE(ipa_post_processor) -->
           A tool that edits this target's IPA output after it is assembled but before it is
           (optionally) signed.
           <p>

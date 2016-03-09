@@ -19,11 +19,13 @@ import com.google.devtools.build.lib.actions.ActionStartedEvent;
 import com.google.devtools.build.lib.analysis.AnalysisPhaseCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildCompleteEvent;
 import com.google.devtools.build.lib.buildtool.buildevent.BuildStartingEvent;
+import com.google.devtools.build.lib.buildtool.buildevent.ExecutionProgressReceiverAvailableEvent;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.pkgcache.LoadingPhaseCompleteEvent;
 import com.google.devtools.build.lib.util.io.AnsiTerminal;
-import com.google.devtools.build.lib.util.io.AnsiTerminalWriter;
+import com.google.devtools.build.lib.util.io.LineCountingAnsiTerminalWriter;
+import com.google.devtools.build.lib.util.io.LineWrappingAnsiTerminalWriter;
 import com.google.devtools.build.lib.util.io.OutErr;
 
 import java.io.IOException;
@@ -41,6 +43,8 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
   private final boolean debugAllEvents;
   private final ExperimentalStateTracker stateTracker;
   private int numLinesProgressBar;
+  private boolean buildComplete;
+  private boolean progressBarNeedsRefresh;
 
   public final int terminalWidth;
 
@@ -56,28 +60,40 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
   @Override
   public synchronized void handle(Event event) {
     try {
-      clearProgressBar();
       if (debugAllEvents) {
         // Debugging only: show all events visible to the new UI.
+        clearProgressBar();
         terminal.flush();
         outErr.getOutputStream().write((event + "\n").getBytes(StandardCharsets.UTF_8));
         outErr.getOutputStream().flush();
+        addProgressBar();
+        terminal.flush();
       } else {
         switch (event.getKind()) {
           case STDOUT:
           case STDERR:
-            terminal.flush();
+            if (!buildComplete) {
+              clearProgressBar();
+              terminal.flush();
+            }
             OutputStream stream =
                 event.getKind() == EventKind.STDOUT
                     ? outErr.getOutputStream()
                     : outErr.getErrorStream();
             stream.write(event.getMessageBytes());
-            stream.write(new byte[] {10, 13});
+            if (!buildComplete) {
+              stream.write(new byte[] {10, 13});
+            }
             stream.flush();
+            if (!buildComplete) {
+              addProgressBar();
+              terminal.flush();
+            }
             break;
           case ERROR:
           case WARNING:
           case INFO:
+            clearProgressBar();
             setEventKindColor(event.getKind());
             terminal.writeString(event.getKind() + ": ");
             terminal.resetTerminal();
@@ -88,11 +104,11 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
               terminal.writeString(event.getMessage());
             }
             crlf();
+            addProgressBar();
+            terminal.flush();
             break;
         }
       }
-      addProgressBar();
-      terminal.flush();
     } catch (IOException e) {
       LOG.warning("IO Error writing to output stream: " + e);
     }
@@ -132,9 +148,15 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
   }
 
   @Subscribe
+  public void progressReceiverAvailable(ExecutionProgressReceiverAvailableEvent event) {
+    stateTracker.progressReceiverAvailable(event);
+  }
+
+  @Subscribe
   public void buildComplete(BuildCompleteEvent event) {
     stateTracker.buildComplete(event);
     refresh();
+    buildComplete = true;
   }
 
   @Subscribe
@@ -149,11 +171,19 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
     refresh();
   }
 
-  private synchronized void refresh() {
+  private void refresh() {
+    progressBarNeedsRefresh = true;
+    doRefresh();
+  }
+
+  private synchronized void doRefresh() {
     try {
-      clearProgressBar();
-      addProgressBar();
-      terminal.flush();
+      if (progressBarNeedsRefresh) {
+        progressBarNeedsRefresh = false;
+        clearProgressBar();
+        addProgressBar();
+        terminal.flush();
+      }
     } catch (IOException e) {
       LOG.warning("IO Error writing to output stream: " + e);
     }
@@ -183,62 +213,9 @@ public class ExperimentalEventHandler extends BlazeCommandEventHandler {
 
   private void addProgressBar() throws IOException {
     LineCountingAnsiTerminalWriter terminalWriter = new LineCountingAnsiTerminalWriter(terminal);
-    stateTracker.writeProgressBar(terminalWriter);
+    stateTracker.writeProgressBar(
+        new LineWrappingAnsiTerminalWriter(terminalWriter, terminalWidth - 1));
     terminalWriter.newline();
     numLinesProgressBar = terminalWriter.getWrittenLines();
-  }
-
-  private class LineCountingAnsiTerminalWriter implements AnsiTerminalWriter {
-
-    private final AnsiTerminal terminal;
-    private int lineCount;
-    private int currentLineLength;
-
-    LineCountingAnsiTerminalWriter(AnsiTerminal terminal) {
-      this.terminal = terminal;
-      this.lineCount = 0;
-    }
-
-    @Override
-    public AnsiTerminalWriter append(String text) throws IOException {
-      terminal.writeString(text);
-      currentLineLength += text.length();
-      return this;
-    }
-
-    @Override
-    public AnsiTerminalWriter newline() throws IOException {
-      terminal.cr();
-      terminal.writeString("\n");
-      // Besides the line ended by the newline() command, a line-shift can also happen
-      // by a string longer than the terminal width being wrapped around; account for
-      // this as well.
-      lineCount += 1 + currentLineLength / terminalWidth;
-      currentLineLength = 0;
-      return this;
-    }
-
-    @Override
-    public AnsiTerminalWriter okStatus() throws IOException {
-      terminal.textGreen();
-      return this;
-    }
-
-    @Override
-    public AnsiTerminalWriter failStatus() throws IOException {
-      terminal.textRed();
-      terminal.textBold();
-      return this;
-    }
-
-    @Override
-    public AnsiTerminalWriter normal() throws IOException {
-      terminal.resetTerminal();
-      return this;
-    }
-
-    public int getWrittenLines() throws IOException {
-      return lineCount;
-    }
   }
 }

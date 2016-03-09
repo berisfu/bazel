@@ -115,13 +115,13 @@ public class GitCloner {
         mapper.get("init_submodules", Type.BOOLEAN),
         outputDirectory);
 
-	// Setup proxy if remote is http or https
+    // Setup proxy if remote is http or https
     if (descriptor.remote != null && descriptor.remote.startsWith("http")) {
       try {
         ProxyHelper.createProxyIfNeeded(descriptor.remote);
       } catch (IOException ie) {
         throw new RepositoryFunctionException(ie, Transience.TRANSIENT);
-      }    	
+      }
     }
 
     Git git = null;

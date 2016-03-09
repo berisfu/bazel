@@ -136,5 +136,4 @@ public class ProxyHelperTest {
       assertThat(e.getMessage()).contains("No password given for proxy");
     }
   }
-
 }
