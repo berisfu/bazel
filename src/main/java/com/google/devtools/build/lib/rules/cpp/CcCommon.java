@@ -408,6 +408,18 @@ public final class CcCommon {
         ruleContext.attributeError("includes",
             "Path references a path above the execution root.");
       }
+      if (!includesPath.startsWith(packageFragment)) {
+        ruleContext.attributeWarning(
+            "includes",
+            "'"
+                + includesAttr
+                + "' resolves to '"
+                + includesPath
+                + "' not below the relative path of its package '"
+                + packageFragment
+                + "'. This will be an error in the future");
+        // TODO(janakr): Add a link to a page explaining the problem and fixes?
+      }
       result.add(includesPath);
       result.add(ruleContext.getConfiguration().getGenfilesFragment().getRelative(includesPath));
     }
@@ -432,7 +444,7 @@ public final class CcCommon {
       }
     }
     prerequisites.addTransitive(context.getDeclaredIncludeSrcs());
-    prerequisites.addTransitive(context.getAdditionalInputs());
+    prerequisites.addTransitive(context.getAdditionalInputs(CppHelper.usePic(ruleContext, false)));
     return prerequisites.build();
   }
 

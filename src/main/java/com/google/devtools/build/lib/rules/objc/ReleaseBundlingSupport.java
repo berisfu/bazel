@@ -56,7 +56,6 @@ import com.google.devtools.build.lib.rules.apple.Platform;
 import com.google.devtools.build.lib.rules.objc.BundleSupport.ExtraActoolArgs;
 import com.google.devtools.build.lib.rules.objc.Bundling.Builder;
 import com.google.devtools.build.lib.shell.ShellUtils;
-import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos.XcodeprojBuildSetting;
 
 import com.dd.plist.NSArray;
@@ -87,9 +86,6 @@ public final class ReleaseBundlingSupport {
   @VisibleForTesting
   static final String NO_ASSET_CATALOG_ERROR_FORMAT =
       "a value was specified (%s), but this app does not have any asset catalogs";
-  @VisibleForTesting
-  static final String INVALID_FAMILIES_ERROR =
-      "Expected one or two strings from the list 'iphone', 'ipad'";
   @VisibleForTesting
   static final String DEVICE_NO_PROVISIONING_PROFILE =
       "Provisioning profile must be set for device build";
@@ -124,6 +120,7 @@ public final class ReleaseBundlingSupport {
   private final ObjcProvider objcProvider;
   private final LinkedBinary linkedBinary;
   private final IntermediateArtifacts intermediateArtifacts;
+  private final ReleaseBundling releaseBundling;
 
   /**
    * Indicator as to whether this rule generates a binary directly or whether only dependencies
@@ -156,6 +153,8 @@ public final class ReleaseBundlingSupport {
    * @param bundleMinimumOsVersion the minimum OS version this bundle's plist should be generated
    *    for (<b>not</b> the minimum OS version its binary is compiled with, that needs to be set
    *    through the configuration)
+   * @param releaseBundling the {@link ReleaseBundling} containing information for creating a
+   *    releaseable bundle.
    */
   ReleaseBundlingSupport(
       RuleContext ruleContext,
@@ -163,15 +162,40 @@ public final class ReleaseBundlingSupport {
       LinkedBinary linkedBinary,
       String bundleDirFormat,
       String bundleName,
-      DottedVersion bundleMinimumOsVersion) {
+      DottedVersion bundleMinimumOsVersion,
+      ReleaseBundling releaseBundling) {
     this.linkedBinary = linkedBinary;
     this.attributes = new Attributes(ruleContext);
     this.ruleContext = ruleContext;
     this.objcProvider = objcProvider;
-    this.intermediateArtifacts = ObjcRuleClasses.intermediateArtifacts(ruleContext);
-    bundling = bundling(ruleContext, objcProvider, bundleDirFormat, bundleName,
+    this.releaseBundling = releaseBundling;
+    this.intermediateArtifacts = releaseBundling.getIntermediateArtifacts();
+    this.bundling = bundling(ruleContext, objcProvider, bundleDirFormat, bundleName,
         bundleMinimumOsVersion);
     bundleSupport = new BundleSupport(ruleContext, bundling, extraActoolArgs());
+  }
+
+  /**
+   * Creates a new application support within the given rule context.
+   *
+   * @param ruleContext context for the application-generating rule
+   * @param objcProvider provider containing all dependencies' information as well as some of this
+   *    rule's
+   * @param linkedBinary whether to look for a linked binary from this rule and dependencies or just
+   *    the latter
+   * @param bundleDirFormat format string representing the bundle's directory with a single
+   *    placeholder for the target name (e.g. {@code "Payload/%s.app"})
+   * @param bundleName name of the bundle, used with bundleDirFormat
+   */
+  ReleaseBundlingSupport(
+      RuleContext ruleContext,
+      ObjcProvider objcProvider,
+      LinkedBinary linkedBinary,
+      String bundleDirFormat,
+      String bundleName,
+      DottedVersion bundleMinimumOsVersion) throws InterruptedException {
+    this(ruleContext, objcProvider, linkedBinary, bundleDirFormat, bundleName,
+        bundleMinimumOsVersion, ReleaseBundling.releaseBundling(ruleContext));
   }
 
   /**
@@ -189,13 +213,14 @@ public final class ReleaseBundlingSupport {
    * @param bundleMinimumOsVersion the minimum OS version this bundle's plist should be generated
    *    for (<b>not</b> the minimum OS version its binary is compiled with, that needs to be set
    *    through the configuration)
+   * @throws InterruptedException
    */
   ReleaseBundlingSupport(
       RuleContext ruleContext,
       ObjcProvider objcProvider,
       LinkedBinary linkedBinary,
       String bundleDirFormat,
-      DottedVersion bundleMinimumOsVersion) {
+      DottedVersion bundleMinimumOsVersion) throws InterruptedException {
     this(ruleContext, objcProvider, linkedBinary, bundleDirFormat, ruleContext.getLabel().getName(),
         bundleMinimumOsVersion);
   }
@@ -212,54 +237,24 @@ public final class ReleaseBundlingSupport {
     // run actool in this case, which means it does not do validity checks,
     // and we MUST raise our own error somehow...
     if (!objcProvider.hasAssetCatalogs()) {
-      if (attributes.appIcon() != null) {
+      if (releaseBundling.getAppIcon() != null) {
         ruleContext.attributeError("app_icon",
-            String.format(NO_ASSET_CATALOG_ERROR_FORMAT, attributes.appIcon()));
+            String.format(NO_ASSET_CATALOG_ERROR_FORMAT, releaseBundling.getAppIcon()));
       }
-      if (attributes.launchImage() != null) {
+      if (releaseBundling.getLaunchImage() != null) {
         ruleContext.attributeError("launch_image",
-            String.format(NO_ASSET_CATALOG_ERROR_FORMAT, attributes.launchImage()));
+            String.format(NO_ASSET_CATALOG_ERROR_FORMAT, releaseBundling.getLaunchImage()));
       }
     }
-
-    if (bundleSupport.targetDeviceFamilies().isEmpty()) {
-      ruleContext.attributeError("families", INVALID_FAMILIES_ERROR);
-    }
-
-    validateLaunchScreen();
 
     AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
-    if (attributes.provisioningProfile() == null
+    if (releaseBundling.getProvisioningProfile() == null
         && appleConfiguration.getBundlingPlatform() != Platform.IOS_SIMULATOR) {
-      ruleContext.attributeError("provisioning_profile", DEVICE_NO_PROVISIONING_PROFILE);
+      ruleContext.attributeError(releaseBundling.getProvisioningProfileAttrName(),
+          DEVICE_NO_PROVISIONING_PROFILE);
     }
 
     return this;
-  }
-
-  private void validateLaunchScreen() {
-    if (ruleContext.attributes().isAttributeValueExplicitlySpecified("launch_storyboard")) {
-      DottedVersion minimumOs = bundling.getMinimumOsVersion();
-      if (ObjcRuleClasses.useLaunchStoryboard(ruleContext, bundling.getMinimumOsVersion())) {
-        if (ruleContext.attributes().isAttributeValueExplicitlySpecified("launch_image")) {
-          ruleContext.attributeWarning(
-              "launch_image",
-              String.format(
-                  "launch_image was specified but since --ios_minimum_os=%s (>=8.0), the also "
-                      + "specified launch_storyboard will be used instead",
-                  minimumOs));
-        }
-      } else {
-        if (!ruleContext.attributes().isAttributeValueExplicitlySpecified("launch_image")) {
-          ruleContext.attributeWarning(
-              "launch_storyboard",
-              String.format(
-                  "launch_storyboard was specified but since --ios_minimum_os=%s (<8.0) and no "
-                      + "launch_image was specified instead it will be ignored",
-                  minimumOs));
-        }
-      }
-    }
   }
 
   /**
@@ -280,7 +275,6 @@ public final class ReleaseBundlingSupport {
    * multi-architecture binary.
    *
    * @return this application support
-   * @throws InterruptedException
    */
   ReleaseBundlingSupport registerActions() throws InterruptedException {
     bundleSupport.registerActions(objcProvider);
@@ -293,7 +287,7 @@ public final class ReleaseBundlingSupport {
     registerEnvironmentPlistAction();
     registerAutomaticPlistAction();
 
-    if (ObjcRuleClasses.useLaunchStoryboard(ruleContext, bundling.getMinimumOsVersion())) {
+    if (releaseBundling.getLaunchStoryboard() != null) {
       registerLaunchStoryboardPlistAction();
     }
 
@@ -342,21 +336,11 @@ public final class ReleaseBundlingSupport {
   }
 
   private void registerLaunchStoryboardPlistAction() {
-    String launchStoryboard = attributes.launchStoryboard().getFilename();
+    String launchStoryboard = releaseBundling.getLaunchStoryboard().getFilename();
     String launchStoryboardName = launchStoryboard.substring(0, launchStoryboard.lastIndexOf('.'));
-    String contents =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            + "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-            + "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-            + "<plist version=\"1.0\">\n"
-            + "<dict>\n"
-            + "  <key>UILaunchStoryboardName</key>\n"
-            + "  <string>"
-            + launchStoryboardName
-            + "</string>\n"
-            + "</dict>\n"
-            + "</plist>\n";
-
+    NSDictionary result = new NSDictionary();
+    result.put("UILaunchStoryboardName", launchStoryboardName);
+    String contents = result.toGnuStepASCIIPropertyList();
     ruleContext.registerAction(
         new FileWriteAction(
             ruleContext.getActionOwner(), getLaunchStoryboardPlist(), contents, false));
@@ -374,7 +358,7 @@ public final class ReleaseBundlingSupport {
             configuration.getBundlingPlatform().getLowerCaseNameInPlist(),
             configuration.getIosSdkVersion());
     ruleContext.registerAction(
-        ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+        ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
             .setMnemonic("EnvironmentPlist")
             .setExecutable(attributes.environmentPlist())
             .addArguments("--platform", platformWithVersion)
@@ -382,7 +366,7 @@ public final class ReleaseBundlingSupport {
             .addOutput(getGeneratedEnvironmentPlist())
             .build(ruleContext));
   }
-  
+
   private void registerAutomaticPlistAction() {
     ruleContext.registerAction(
         new FileWriteAction(
@@ -405,14 +389,14 @@ public final class ReleaseBundlingSupport {
     NSDictionary result = new NSDictionary();
 
     if (uiDeviceFamily != null) {
-      result.put("UIDeviceFamily", NSObject.wrap(uiDeviceFamily.toArray()));
+      result.put("UIDeviceFamily", uiDeviceFamily.toArray());
     }
-    result.put("DTPlatformName", NSObject.wrap(platform.getLowerCaseNameInPlist()));
+    result.put("DTPlatformName", platform.getLowerCaseNameInPlist());
     result.put(
         "DTSDKName",
-        NSObject.wrap(platform.getLowerCaseNameInPlist() + appleConfiguration.getIosSdkVersion()));
+        platform.getLowerCaseNameInPlist() + appleConfiguration.getIosSdkVersion());
     result.put("CFBundleSupportedPlatforms", new NSArray(NSObject.wrap(platform.getNameInPlist())));
-    result.put("MinimumOSVersion", NSObject.wrap(bundling.getMinimumOsVersion().toString()));
+    result.put("MinimumOSVersion", bundling.getMinimumOsVersion().toString());
 
     return result;
   }
@@ -429,7 +413,7 @@ public final class ReleaseBundlingSupport {
    * avoid excessive zipping/unzipping of IPA contents.
    */
   private void registerPostProcessAndSigningActions() throws InterruptedException {
-    Artifact processedIpa = ruleContext.getImplicitOutputArtifact(IPA);
+    Artifact processedIpa = releaseBundling.getIpaArtifact();
     Artifact unprocessedIpa = intermediateArtifacts.unprocessedIpa();
 
     boolean processingNeeded = false;
@@ -459,7 +443,8 @@ public final class ReleaseBundlingSupport {
       processingNeeded = true;
       registerEntitlementsActions();
       actionCommandLine += signingCommandLine();
-      inputs.add(attributes.provisioningProfile()).add(intermediateArtifacts.entitlements());
+      inputs.add(releaseBundling.getProvisioningProfile()).add(
+          intermediateArtifacts.entitlements());
     }
 
     actionCommandLine += "cd ${t} && /usr/bin/zip -q -r \"${signed_ipa}\" .";
@@ -503,6 +488,23 @@ public final class ReleaseBundlingSupport {
     return codesignCommandLineBuilder.toString();
   }
 
+  /**
+   * Creates entitlement actions such that an entitlements file is generated in
+   * {@link IntermediateArtifacts#entitlements()} which can be used for signing in this bundle.
+   *
+   * <p>Entitlements are generated based on a plist-format entitlements file passed to this bundle's
+   * {@code entitlements} attribute or, if that is not set, entitlements extracted from the provided
+   * mobile provisioning profile. The team prefix is extracted from the provisioning profile and
+   * the following substitutions performed (assuming the prefix extracted was {@code PREFIX}):
+   * <ol>
+   *   <li>"PREFIX.*" -> "PREFIX.BUNDLE_ID" (where BUNDLE_ID is this bundle's id)
+   *   <li>"$(AppIdentifierPrefix)" -> "PREFIX."
+   *   <li>"$(CFBundleIdentifier)" -> "BUNDLE_ID" (where BUNDLE_ID is this bundle's id)
+   * </ol>
+   *
+   * <p>Finally, if an entitlements file was provided via {@code --extra_entitlements} it is merged
+   * into the substituted entitlements.
+   */
   private void registerEntitlementsActions() throws InterruptedException {
     Artifact teamPrefixFile =
         intermediateArtifacts.appendExtensionForEntitlementArtifact(".team_prefix_file");
@@ -515,7 +517,46 @@ public final class ReleaseBundlingSupport {
               ".entitlements_with_variables");
       registerExtractEntitlementsAction(entitlementsNeedingSubstitution);
     }
-    registerEntitlementsVariableSubstitutionAction(entitlementsNeedingSubstitution, teamPrefixFile);
+
+    Artifact substitutedEntitlements = intermediateArtifacts.entitlements();
+    if (attributes.extraEntitlements() != null) {
+      substitutedEntitlements =
+          intermediateArtifacts.appendExtensionForEntitlementArtifact(".substituted");
+      registerMergeEntitlementsAction(substitutedEntitlements, attributes.extraEntitlements());
+    }
+
+    registerEntitlementsVariableSubstitutionAction(
+        entitlementsNeedingSubstitution, teamPrefixFile, substitutedEntitlements);
+  }
+
+  private void registerMergeEntitlementsAction(
+      Artifact substitutedEntitlements, Artifact extraEntitlements) {
+
+    PlMergeControlBytes controlBytes =
+        PlMergeControlBytes.fromPlists(
+            NestedSetBuilder.create(Order.STABLE_ORDER, substitutedEntitlements, extraEntitlements),
+            intermediateArtifacts.entitlements());
+
+    Artifact plMergeControlArtifact = ObjcRuleClasses.artifactByAppendingToBaseName(ruleContext,
+        artifactName(".merge-entitlements-control"));
+
+    ruleContext.registerAction(
+        new BinaryFileWriteAction(
+            ruleContext.getActionOwner(),
+            plMergeControlArtifact,
+            controlBytes,
+            /*makeExecutable=*/ false));
+
+    ruleContext.registerAction(
+        new SpawnAction.Builder()
+            .setMnemonic("MergeEntitlementsFiles")
+            .setExecutable(attributes.plmerge())
+            .addArgument("--control")
+            .addInputArgument(plMergeControlArtifact)
+            .addInput(substitutedEntitlements)
+            .addInput(extraEntitlements)
+            .addOutput(intermediateArtifacts.entitlements())
+            .build(ruleContext));
   }
 
   /**
@@ -537,7 +578,6 @@ public final class ReleaseBundlingSupport {
    * top level target in a blaze invocation.
    *
    * @return this application support
-   * @throws InterruptedException 
    */
   ReleaseBundlingSupport addFilesToBuild(NestedSetBuilder<Artifact> filesToBuild)
       throws InterruptedException {
@@ -551,14 +591,12 @@ public final class ReleaseBundlingSupport {
 
     if (linkedBinary == LinkedBinary.LOCAL_AND_DEPENDENCIES
         && ObjcRuleClasses.objcConfiguration(ruleContext).generateDebugSymbols()) {
-      IntermediateArtifacts intermediateArtifacts =
-          ObjcRuleClasses.intermediateArtifacts(ruleContext);
       debugSymbolBuilder.add(intermediateArtifacts.dsymPlist())
           .add(intermediateArtifacts.dsymSymbol())
           .add(intermediateArtifacts.breakpadSym());
     }
 
-    filesToBuild.add(ruleContext.getImplicitOutputArtifact(ReleaseBundlingSupport.IPA))
+    filesToBuild.add(releaseBundling.getIpaArtifact())
         // TODO(bazel-team): Fat binaries may require some merging of these file rather than just
         // making them available.
         .addTransitive(debugSymbolBuilder.build());
@@ -568,7 +606,6 @@ public final class ReleaseBundlingSupport {
   /**
    * Creates the {@link XcTestAppProvider} that can be used if this application is used as an
    * {@code xctest_app}.
-   * @throws InterruptedException 
    */
   XcTestAppProvider xcTestAppProvider() throws InterruptedException {
     // We want access to #import-able things from our test rig's dependency graph, but we don't
@@ -587,8 +624,8 @@ public final class ReleaseBundlingSupport {
         .build();
     // TODO(bazel-team): Handle the FRAMEWORK_DIR key properly. We probably want to add it to
     // framework search paths, but not actually link it with the -framework flag.
-    return new XcTestAppProvider(intermediateArtifacts.combinedArchitectureBinary(),
-        ruleContext.getImplicitOutputArtifact(IPA), partialObjcProvider);
+    return new XcTestAppProvider(intermediateArtifacts
+        .combinedArchitectureBinary(), releaseBundling.getIpaArtifact(), partialObjcProvider);
   }
 
   /**
@@ -617,12 +654,10 @@ public final class ReleaseBundlingSupport {
 
   /**
    * Returns a {@link RunfilesSupport} that uses the provided runner script as the executable.
-   * @throws InterruptedException 
    */
   RunfilesSupport runfilesSupport(Artifact runnerScript) throws InterruptedException {
-    Artifact ipaFile = ruleContext.getImplicitOutputArtifact(ReleaseBundlingSupport.IPA);
     Runfiles runfiles = new Runfiles.Builder(ruleContext.getWorkspaceName())
-        .addArtifact(ipaFile)
+        .addArtifact(releaseBundling.getIpaArtifact())
         .addArtifact(runnerScript)
         .addArtifact(attributes.iossim())
         .build();
@@ -631,12 +666,11 @@ public final class ReleaseBundlingSupport {
 
   private ExtraActoolArgs extraActoolArgs() {
     ImmutableList.Builder<String> extraArgs = ImmutableList.builder();
-    if (attributes.appIcon() != null) {
-      extraArgs.add("--app-icon", attributes.appIcon());
+    if (releaseBundling.getAppIcon() != null) {
+      extraArgs.add("--app-icon", releaseBundling.getAppIcon());
     }
-    if (attributes.launchImage() != null
-        && !ObjcRuleClasses.useLaunchStoryboard(ruleContext, bundling.getMinimumOsVersion())) {
-      extraArgs.add("--launch-image", attributes.launchImage());
+    if (releaseBundling.getLaunchImage() != null) {
+      extraArgs.add("--launch-image", releaseBundling.getLaunchImage());
     }
     return new ExtraActoolArgs(extraArgs.build());
   }
@@ -651,19 +685,9 @@ public final class ReleaseBundlingSupport {
     AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
     if (appleConfiguration.getBundlingPlatform() == Platform.IOS_DEVICE) {
       extraBundleFiles = ImmutableList.of(new BundleableFile(
-          new Attributes(ruleContext).provisioningProfile(),
-          PROVISIONING_PROFILE_BUNDLE_FILE));
+          releaseBundling.getProvisioningProfile(), PROVISIONING_PROFILE_BUNDLE_FILE));
     } else {
       extraBundleFiles = ImmutableList.of();
-    }
-
-    String primaryBundleId = null;
-    String fallbackBundleId = null;
-
-    if (ruleContext.attributes().isAttributeValueExplicitlySpecified("bundle_id")) {
-      primaryBundleId = ruleContext.attributes().get("bundle_id", Type.STRING);
-    } else {
-      fallbackBundleId = ruleContext.attributes().get("bundle_id", Type.STRING);
     }
 
     Bundling.Builder bundling =
@@ -674,16 +698,28 @@ public final class ReleaseBundlingSupport {
             .setBundleDirFormat(bundleDirFormat)
             .addExtraBundleFiles(extraBundleFiles)
             .setObjcProvider(objcProvider)
-            .addInfoplistInputFromRule(ruleContext)
-            .addInfoplistInput(getGeneratedVersionPlist())
-            .addInfoplistInput(getGeneratedEnvironmentPlist())
-            .setAutomaticEntriesInfoplistInput(getGeneratedAutomaticPlist())
-            .setIntermediateArtifacts(ObjcRuleClasses.intermediateArtifacts(ruleContext))
-            .setPrimaryBundleId(primaryBundleId)
-            .setFallbackBundleId(fallbackBundleId)
-            .setMinimumOsVersion(minimumOsVersion);
+            .setIntermediateArtifacts(intermediateArtifacts)
+            .setPrimaryBundleId(releaseBundling.getPrimaryBundleId())
+            .setFallbackBundleId(releaseBundling.getFallbackBundleId())
+            .setMinimumOsVersion(minimumOsVersion)
+            .setArtifactPrefix(releaseBundling.getArtifactPrefix())
+            .setTargetDeviceFamilies(releaseBundling.getTargetDeviceFamilies());
 
-    if (ObjcRuleClasses.useLaunchStoryboard(ruleContext, minimumOsVersion)) {
+    // Add plists from rule first.
+    if (releaseBundling.getInfoPlistsFromRule() != null) {
+      bundling.addInfoplistInputs(releaseBundling.getInfoPlistsFromRule());
+    } else {
+      bundling.addInfoplistInputFromRule(ruleContext);
+    }
+    
+    // Add generated plists next so that generated values can override the default values in the
+    // plists from rule.
+    bundling.setAutomaticEntriesInfoplistInput(getGeneratedAutomaticPlist())
+        .addInfoplistInput(getGeneratedVersionPlist())
+        .addInfoplistInput(getGeneratedEnvironmentPlist())
+        .addInfoplistInputs(releaseBundling.getInfoplistInputs());
+    
+    if (releaseBundling.getLaunchStoryboard() != null) {
       bundling.addInfoplistInput(getLaunchStoryboardPlist());
     }
 
@@ -694,7 +730,7 @@ public final class ReleaseBundlingSupport {
     Artifact resultingLinkedBinary = intermediateArtifacts.combinedArchitectureBinary();
     NestedSet<Artifact> linkedBinaries = linkedBinaries();
 
-    ruleContext.registerAction(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+    ruleContext.registerAction(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
         .setMnemonic("ObjcCombiningArchitectures")
         .addTransitiveInputs(linkedBinaries)
         .addOutput(resultingLinkedBinary)
@@ -719,17 +755,16 @@ public final class ReleaseBundlingSupport {
   /** Returns this target's Xcode build settings. */
   private Iterable<XcodeprojBuildSetting> buildSettings() {
     ImmutableList.Builder<XcodeprojBuildSetting> buildSettings = new ImmutableList.Builder<>();
-    if (attributes.appIcon() != null) {
+    if (releaseBundling.getAppIcon() != null) {
       buildSettings.add(XcodeprojBuildSetting.newBuilder()
           .setName("ASSETCATALOG_COMPILER_APPICON_NAME")
-          .setValue(attributes.appIcon())
+          .setValue(releaseBundling.getAppIcon())
           .build());
     }
-    if (attributes.launchImage() != null
-        && !ObjcRuleClasses.useLaunchStoryboard(ruleContext, bundling.getMinimumOsVersion())) {
+    if (releaseBundling.getLaunchImage() != null) {
       buildSettings.add(XcodeprojBuildSetting.newBuilder()
           .setName("ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME")
-          .setValue(attributes.launchImage())
+          .setValue(releaseBundling.getLaunchImage())
           .build());
     }
 
@@ -754,8 +789,8 @@ public final class ReleaseBundlingSupport {
   }
 
   private void registerBundleMergeActions() {
-    Artifact bundleMergeControlArtifact =
-        ObjcRuleClasses.artifactByAppendingToBaseName(ruleContext, ".ipa-control");
+    Artifact bundleMergeControlArtifact = ObjcRuleClasses.artifactByAppendingToBaseName(ruleContext,
+        artifactName(".ipa-control"));
 
     BundleMergeControlBytes controlBytes =
         new BundleMergeControlBytes(
@@ -835,13 +870,13 @@ public final class ReleaseBundlingSupport {
   private void registerExtractTeamPrefixAction(Artifact teamPrefixFile) {
     String shellCommand = "set -e && "
         + "PLIST=$(mktemp -t teamprefix.plist) && trap \"rm ${PLIST}\" EXIT && "
-        + extractPlistCommand(attributes.provisioningProfile()) + " > ${PLIST} && "
+        + extractPlistCommand(releaseBundling.getProvisioningProfile()) + " > ${PLIST} && "
         + "/usr/libexec/PlistBuddy -c 'Print ApplicationIdentifierPrefix:0' ${PLIST} > "
         + teamPrefixFile.getShellEscapedExecPathString();
     ruleContext.registerAction(
         ObjcRuleClasses.spawnBashOnDarwinActionBuilder(shellCommand)
             .setMnemonic("ExtractIosTeamPrefix")
-            .addInput(attributes.provisioningProfile())
+            .addInput(releaseBundling.getProvisioningProfile())
             .addOutput(teamPrefixFile)
             .build(ruleContext));
   }
@@ -854,14 +889,14 @@ public final class ReleaseBundlingSupport {
     // is the application name, and is specified as an attribute.
     String shellCommand = "set -e && "
         + "PLIST=$(mktemp -t entitlements.plist) && trap \"rm ${PLIST}\" EXIT && "
-        + extractPlistCommand(attributes.provisioningProfile()) + " > ${PLIST} && "
+        + extractPlistCommand(releaseBundling.getProvisioningProfile()) + " > ${PLIST} && "
         + "/usr/libexec/PlistBuddy -x -c 'Print Entitlements' ${PLIST} > "
         + entitlements.getShellEscapedExecPathString();
     ruleContext.registerAction(
         ObjcRuleClasses.spawnBashOnDarwinActionBuilder(shellCommand)
             .setMnemonic("ExtractIosEntitlements")
             .setProgressMessage("Extracting entitlements: " + ruleContext.getLabel())
-            .addInput(attributes.provisioningProfile())
+            .addInput(releaseBundling.getProvisioningProfile())
             .addOutput(entitlements)
             .build(ruleContext));
 
@@ -869,9 +904,8 @@ public final class ReleaseBundlingSupport {
   }
 
   private void registerEntitlementsVariableSubstitutionAction(
-      Artifact inputEntitlements, Artifact prefix) {
-    Artifact substitutedEntitlements = intermediateArtifacts.entitlements();
-    String escapedBundleId = ShellUtils.shellEscape(attributes.bundleId());
+      Artifact inputEntitlements, Artifact prefix, Artifact substitutedEntitlements) {
+    String escapedBundleId = ShellUtils.shellEscape(releaseBundling.getBundleId());
     String shellCommand =
         "set -e && "
             + "PREFIX=\"$(cat "
@@ -915,7 +949,7 @@ public final class ReleaseBundlingSupport {
         .addExecPath("--scan-executable", intermediateArtifacts.combinedArchitectureBinary());
 
     ruleContext.registerAction(
-        ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+        ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
             .setMnemonic("SwiftStdlibCopy")
             .setExecutable(attributes.swiftStdlibToolWrapper())
             .setCommandLine(commandLine.build())
@@ -941,7 +975,7 @@ public final class ReleaseBundlingSupport {
       // configured in it (DeveloperCertificates:0).
       identity =
           "$(PLIST=$(mktemp -t cert.plist) && trap \"rm ${PLIST}\" EXIT && "
-              + extractPlistCommand(attributes.provisioningProfile())
+              + extractPlistCommand(releaseBundling.getProvisioningProfile())
               + " > ${PLIST} && "
               + "/usr/libexec/PlistBuddy -c 'Print DeveloperCertificates:0' ${PLIST} | "
               + "openssl x509 -inform DER -noout -fingerprint | "
@@ -957,59 +991,46 @@ public final class ReleaseBundlingSupport {
 
   private Artifact getGeneratedVersionPlist() {
     return ruleContext.getRelatedArtifact(
-        ruleContext.getUniqueDirectory("plists"), "-version.plist");
+        ruleContext.getUniqueDirectory("plists"), artifactName("-version.plist"));
   }
 
   private Artifact getGeneratedEnvironmentPlist() {
     return ruleContext.getRelatedArtifact(
-        ruleContext.getUniqueDirectory("plists"), "-environment.plist");
+        ruleContext.getUniqueDirectory("plists"), artifactName("-environment.plist"));
   }
-  
+
   private Artifact getGeneratedAutomaticPlist() {
     return ruleContext.getRelatedArtifact(
-        ruleContext.getUniqueDirectory("plists"), "-automatic.plist");
+        ruleContext.getUniqueDirectory("plists"), artifactName("-automatic.plist"));
   }
 
   private Artifact getLaunchStoryboardPlist() {
     return ruleContext.getRelatedArtifact(
-        ruleContext.getUniqueDirectory("plists"), "-launchstoryboard.plist");
+        ruleContext.getUniqueDirectory("plists"), artifactName("-launchstoryboard.plist"));
   }
 
   /**
-   * Logic to access attributes required by application support. Attributes are required and
-   * guaranteed to return a value or throw unless they are annotated with {@link Nullable} in which
-   * case they can return {@code null} if no value is defined.
+   * Returns artifact name prefixed with prefix given in {@link ReleaseBundling} if available.
+   * This helps in creating unique artifact name when multiple bundles are created with a different
+   * name than the target name.
+   */
+  private String artifactName(String artifactName) {
+    if (releaseBundling.getArtifactPrefix() != null) {
+      return String.format("-%s%s", releaseBundling.getArtifactPrefix(), artifactName);
+    }
+    return artifactName;
+  }
+
+  /**
+   * Logic to access attributes to access tools required by application support.
+   * Attributes are required and guaranteed to return a value or throw unless they are annotated
+   * with {@link Nullable} in which case they can return {@code null} if no value is defined.
    */
   private static class Attributes {
     private final RuleContext ruleContext;
 
     private Attributes(RuleContext ruleContext) {
       this.ruleContext = ruleContext;
-    }
-
-    @Nullable
-    String appIcon() {
-      return stringAttribute("app_icon");
-    }
-
-    @Nullable
-    String launchImage() {
-      return stringAttribute("launch_image");
-    }
-
-    @Nullable
-    Artifact launchStoryboard() {
-      return ruleContext.getPrerequisiteArtifact("launch_storyboard", Mode.TARGET);
-    }
-
-    @Nullable
-    Artifact provisioningProfile() {
-      Artifact explicitProvisioningProfile =
-          ruleContext.getPrerequisiteArtifact("provisioning_profile", Mode.TARGET);
-      if (explicitProvisioningProfile != null) {
-        return explicitProvisioningProfile;
-      }
-      return ruleContext.getPrerequisiteArtifact(":default_provisioning_profile", Mode.TARGET);
     }
 
     /**
@@ -1028,6 +1049,11 @@ public final class ReleaseBundlingSupport {
       return ruleContext.getPrerequisiteArtifact("entitlements", Mode.TARGET);
     }
 
+    @Nullable
+    Artifact extraEntitlements() {
+      return ruleContext.getPrerequisiteArtifact(":extra_entitlements", Mode.TARGET);
+    }
+
     NestedSet<? extends Artifact> dependentLinkedBinaries() {
       if (ruleContext.attributes().getAttributeDefinition("binary") == null) {
         return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
@@ -1044,6 +1070,13 @@ public final class ReleaseBundlingSupport {
 
     FilesToRunProvider bundleMergeExecutable() {
       return checkNotNull(ruleContext.getExecutablePrerequisite("$bundlemerge", Mode.HOST));
+    }
+
+    /**
+     * Returns a reference to the plmerge executable.
+     */
+    FilesToRunProvider plmerge() {
+      return ruleContext.getExecutablePrerequisite("$plmerge", Mode.HOST);
     }
 
     Artifact iossim() {
@@ -1071,10 +1104,6 @@ public final class ReleaseBundlingSupport {
       return ruleContext.getExecutablePrerequisite("$environment_plist", Mode.HOST);
     }
 
-    String bundleId() {
-      return checkNotNull(stringAttribute("bundle_id"));
-    }
-
     ImmutableMap<String, Artifact> cpuSpecificBreakpadFiles() {
       ImmutableMap.Builder<String, Artifact> results = ImmutableMap.builder();
       if (ruleContext.attributes().has("binary", BuildType.LABEL)) {
@@ -1093,12 +1122,6 @@ public final class ReleaseBundlingSupport {
         }
       }
       return results.build();
-    }
-
-    @Nullable
-    private String stringAttribute(String attribute) {
-      String value = ruleContext.attributes().get(attribute, Type.STRING);
-      return value.isEmpty() ? null : value;
     }
   }
 

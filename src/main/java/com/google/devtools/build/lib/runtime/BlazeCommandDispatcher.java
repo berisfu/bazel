@@ -28,6 +28,7 @@ import com.google.devtools.build.lib.Constants;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Reporter;
+import com.google.devtools.build.lib.flags.InvocationPolicyEnforcer;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.AnsiStrippingOutputStream;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -209,16 +210,10 @@ public class BlazeCommandDispatcher {
    */
   int exec(List<String> args, OutErr outErr, long firstContactTime)
       throws ShutdownBlazeServerException {
-    // Record the start time for the profiler and the timestamp granularity monitor. Do not put
-    // anything before this!
+    // Record the start time for the profiler. Do not put anything before this!
     long execStartTimeNanos = runtime.getClock().nanoTime();
 
-    // Record the command's starting time again, for use by
-    // TimestampGranularityMonitor.waitForTimestampGranularity().
-    // This should be done as close as possible to the start of
-    // the command's execution - that's why we do this separately,
-    // rather than in runtime.beforeCommand().
-    runtime.getTimestampGranularityMonitor().setCommandStartTime();
+    // The initCommand call also records the start time for the timestamp granularity monitor.
     CommandEnvironment env = runtime.initCommand();
     // Record the command's starting time for use by the commands themselves.
     env.recordCommandStartTime(firstContactTime);
@@ -291,7 +286,11 @@ public class BlazeCommandDispatcher {
           new InvocationPolicyEnforcer(runtime.getInvocationPolicy());
       optionsPolicyEnforcer.enforce(optionsParser, commandName);
       optionsPolicyEnforcer =
-          InvocationPolicyEnforcer.create(getRuntime().getStartupOptionsProvider());
+          InvocationPolicyEnforcer.create(
+              getRuntime()
+                  .getStartupOptionsProvider()
+                  .getOptions(BlazeServerStartupOptions.class)
+                  .invocationPolicy);
       optionsPolicyEnforcer.enforce(optionsParser, commandName);
     } catch (OptionsParsingException e) {
       for (String note : rcfileNotes) {
@@ -328,7 +327,6 @@ public class BlazeCommandDispatcher {
     EventHandler handler = createEventHandler(outErr, eventHandlerOptions);
     Reporter reporter = env.getReporter();
     reporter.addHandler(handler);
-    env.getEventBus().register(handler);
 
     // We register an ANSI-allowing handler associated with {@code handler} so that ANSI control
     // codes can be re-introduced later even if blaze is invoked with --color=no. This is useful
@@ -339,6 +337,7 @@ public class BlazeCommandDispatcher {
       ansiAllowingHandler = createEventHandler(colorfulOutErr, eventHandlerOptions);
       reporter.registerAnsiAllowingHandler(handler, ansiAllowingHandler);
     }
+    env.getEventBus().register(ansiAllowingHandler == null ? handler : ansiAllowingHandler);
 
     try {
       // While a Blaze command is active, direct all errors to the client's
@@ -400,7 +399,7 @@ public class BlazeCommandDispatcher {
         reporter.removeHandler(ansiAllowingHandler);
         releaseHandler(ansiAllowingHandler);
       }
-      runtime.getTimestampGranularityMonitor().waitForTimestampGranularity(outErr);
+      env.getTimestampGranularityMonitor().waitForTimestampGranularity(outErr);
     }
   }
 
@@ -477,9 +476,10 @@ public class BlazeCommandDispatcher {
       throws OptionsParsingException {
     if (!rcfileOptions.isEmpty()) {
       String inherited = commandToParse.equals(originalCommand) ? "" : "Inherited ";
-      rcfileNotes.add("Reading options for '" + originalCommand +
-          "' from " + rcfile + ":\n" +
-          "  " + inherited + "'" + commandToParse + "' options: "
+      String source = rcfile.equals("client") ? "Options provided by the client"
+          : "Reading options for '" + originalCommand + "' from " + rcfile;
+      rcfileNotes.add(source + ":\n"
+          + "  " + inherited + "'" + commandToParse + "' options: "
         + Joiner.on(' ').join(rcfileOptions));
       optionsParser.parse(OptionPriority.RC_FILE, rcfile, rcfileOptions);
     }
@@ -489,7 +489,7 @@ public class BlazeCommandDispatcher {
     List<String> result = new ArrayList<>();
     getCommandNamesToParseHelper(commandAnnotation, result);
     result.add("common");
-    // TODO(bazel-team): This statement is a NO-OP: Lists.reverse(result);
+    result = Lists.reverse(result);
     return result;
   }
 

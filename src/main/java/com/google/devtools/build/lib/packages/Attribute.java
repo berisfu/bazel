@@ -699,7 +699,7 @@ public final class Attribute implements Comparable<Attribute> {
     /**
      * Sets a list of sets of mandatory Skylark providers. Every configured target occurring in
      * this label type attribute has to provide all the providers from one of those sets,
-     * otherwise an error is produces during the analysis phase.
+     * otherwise an error is produced during the analysis phase.
      */
     public Builder<TYPE> mandatoryProvidersList(Iterable<? extends Iterable<String>> providersList){
       Preconditions.checkState((type == BuildType.LABEL) || (type == BuildType.LABEL_LIST),
@@ -829,9 +829,8 @@ public final class Attribute implements Comparable<Attribute> {
         if ((name.startsWith("$") || name.startsWith(":")) && allowedFileTypesForLabels == null) {
           allowedFileTypesForLabels = FileTypeSet.ANY_FILE;
         }
-        if (allowedFileTypesForLabels == null) {
-          throw new IllegalStateException(name);
-        }
+        Preconditions.checkNotNull(
+            allowedFileTypesForLabels, "allowedFileTypesForLabels not set for %s", name);
       } else if ((type == BuildType.OUTPUT) || (type == BuildType.OUTPUT_LIST)) {
         // TODO(bazel-team): Set the default to no file type and make explicit calls instead.
         if (allowedFileTypesForLabels == null) {

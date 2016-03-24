@@ -41,6 +41,7 @@ import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClassProvider;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.rules.SkylarkModules;
+import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
 import com.google.devtools.build.lib.syntax.Environment;
 import com.google.devtools.build.lib.syntax.Environment.Extension;
 import com.google.devtools.build.lib.syntax.Mutability;
@@ -476,8 +477,8 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
   /**
    * Returns the defaults package for the default settings.
    */
-  public String getDefaultsPackageContent() {
-    return DefaultsPackage.getDefaultsPackageContent(configurationOptions);
+  public String getDefaultsPackageContent(InvocationPolicy invocationPolicy) {
+    return DefaultsPackage.getDefaultsPackageContent(configurationOptions, invocationPolicy);
   }
 
   /**
@@ -518,7 +519,7 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
       EventHandler eventHandler,
       String astFileContentHashCode,
       Map<String, Extension> importMap) {
-    Environment env = Environment.builder(mutability)
+    return Environment.builder(mutability)
         .setSkylark()
         .setGlobals(globals)
         .setEventHandler(eventHandler)
@@ -526,17 +527,17 @@ public class ConfiguredRuleClassProvider implements RuleClassProvider {
         .setImportedExtensions(importMap)
         .setLoadingPhase()
         .build();
-    return env;
   }
 
   @Override
   public Environment createSkylarkRuleClassEnvironment(
-      Mutability mutability,
+      Label extensionLabel, Mutability mutability,
       EventHandler eventHandler,
       String astFileContentHashCode,
       Map<String, Extension> importMap) {
     return createSkylarkRuleClassEnvironment(
-        mutability, globals, eventHandler, astFileContentHashCode, importMap);
+        mutability, globals.setLabel(extensionLabel),
+        eventHandler, astFileContentHashCode, importMap);
   }
 
 

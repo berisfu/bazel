@@ -373,8 +373,7 @@ public final class CompilationSupport {
         .addFormatEach("-D%s", objcProvider.get(DEFINE))
         .add(coverageFlags.build())
         .add(objcConfiguration.getCopts())
-        .add(attributes.copts())
-        .add(attributes.optionsCopts());
+        .add(attributes.copts());
     PathFragment sourceExecPathFragment = sourceFile.getExecPath();
     String sourcePath = sourceExecPathFragment.getPathString();
     if (!sourceExecPathFragment.isAbsolute() && objcConfiguration.getUseAbsolutePathsForActions()) {
@@ -409,7 +408,7 @@ public final class CompilationSupport {
     }
 
     // TODO(bazel-team): Remote private headers from inputs once they're added to the provider.
-    ruleContext.registerAction(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+    ruleContext.registerAction(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
         .setMnemonic("ObjcCompile")
         .setExecutable(xcrunwrapper(ruleContext))
         .setCommandLine(commandLine.build())
@@ -506,8 +505,10 @@ public final class CompilationSupport {
       commandLine.add("-import-underlying-module");
     }
 
+    commandLine.add(commonFrameworkFlags(objcProvider, appleConfiguration));
+
     ruleContext.registerAction(
-        ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+        ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
             .setMnemonic("SwiftCompile")
             .setExecutable(xcrunwrapper(ruleContext))
             .setCommandLine(commandLine.build())
@@ -577,7 +578,9 @@ public final class CompilationSupport {
       commandLine.add("-I").add(moduleMapPath.getParentDirectory().toString());
     }
 
-    ruleContext.registerAction(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+    commandLine.add(commonFrameworkFlags(objcProvider, appleConfiguration));
+
+    ruleContext.registerAction(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
         .setMnemonic("SwiftModuleMerge")
         .setExecutable(xcrunwrapper(ruleContext))
         .setCommandLine(commandLine.build())
@@ -613,7 +616,7 @@ public final class CompilationSupport {
         Artifact.joinExecPaths("\n", objFiles),
         /*makeExecutable=*/ false));
 
-    actions.add(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+    actions.add(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
         .setMnemonic("ObjcLink")
         .setExecutable(xcrunwrapper(ruleContext))
         .setCommandLine(new CustomCommandLine.Builder()
@@ -637,7 +640,7 @@ public final class CompilationSupport {
     Artifact archive = ruleContext.getImplicitOutputArtifact(FULLY_LINKED_LIB);
 
     ImmutableList<Artifact> ccLibraries = ccLibraries(objcProvider);
-    ruleContext.registerAction(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+    ruleContext.registerAction(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
         .setMnemonic("ObjcLink")
         .setExecutable(xcrunwrapper(ruleContext))
         .setCommandLine(new CustomCommandLine.Builder()
@@ -807,7 +810,7 @@ public final class CompilationSupport {
     NestedSet<Artifact> bazelBuiltLibraries = Iterables.isEmpty(prunedJ2ObjcArchives)
         ? objcProvider.get(LIBRARY) : substituteJ2ObjcPrunedLibraries(objcProvider);
     ruleContext.registerAction(
-        ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+        ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
             .setMnemonic("ObjcLink")
             .setShellCommand(ImmutableList.of("/bin/bash", "-c"))
             .setCommandLine(
@@ -833,7 +836,7 @@ public final class CompilationSupport {
       Artifact strippedBinary = intermediateArtifacts.strippedSingleArchitectureBinary();
 
       ruleContext.registerAction(
-          ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+          ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
               .setMnemonic("ObjcBinarySymbolStrip")
               .setExecutable(xcrunwrapper(ruleContext))
               .setCommandLine(symbolStripCommandLine(stripArgs, binaryToLink, strippedBinary))
@@ -965,6 +968,10 @@ public final class CompilationSupport {
           .add("-Xlinker").add("@executable_path/Frameworks");
     }
 
+    for (String linkopt : attributes.linkopts()) {
+      commandLine.add("-Wl," + linkopt);
+    }
+    
     // Call to dsymutil for debug symbol generation must happen in the link action.
     // All debug symbol information is encoded in object files inside archive files. To generate
     // the debug symbol bundle, dsymutil will look inside the linked binary for the encoded
@@ -1078,7 +1085,7 @@ public final class CompilationSupport {
             paramFile,
             commandLine,
             ParameterFile.ParameterFileType.UNQUOTED, ISO_8859_1));
-        ruleContext.registerAction(ObjcRuleClasses.spawnXcrunActionBuilder(ruleContext)
+        ruleContext.registerAction(ObjcRuleClasses.spawnAppleEnvActionBuilder(ruleContext)
             .setMnemonic("DummyPruner")
             .setExecutable(pruner)
             .addInput(dummyArchive)
@@ -1111,8 +1118,7 @@ public final class CompilationSupport {
 
     // The include directory options ("-I") are parsed out of copts. The include directories are
     // added as non-propagated header search paths local to the associated Xcode target.
-    Iterable<String> copts = Iterables.concat(
-        objcConfiguration.getCopts(), attributes.copts(), attributes.optionsCopts());
+    Iterable<String> copts = Iterables.concat(objcConfiguration.getCopts(), attributes.copts());
     Iterable<String> includeDirOptions = Iterables.filter(copts, INCLUDE_DIR_OPTION_IN_COPTS);
     Iterable<String> coptsWithoutIncludeDirs = Iterables.filter(
         copts, Predicates.not(INCLUDE_DIR_OPTION_IN_COPTS));
@@ -1318,14 +1324,27 @@ public final class CompilationSupport {
         .add("-arch", appleConfiguration.getIosCpu())
         .add("-isysroot", AppleToolchain.sdkDir())
         // TODO(bazel-team): Pass framework search paths to Xcodegen.
+        .addAll(commonFrameworkFlags(provider, appleConfiguration))
+        .build();
+  }
+
+  /**
+   * Returns a list of framework search path flags for clang/swift actions.
+   */
+  private static Iterable<String> commonFrameworkFlags(
+      ObjcProvider provider, AppleConfiguration appleConfiguration) {
+    Platform platform = Platform.forIosArch(appleConfiguration.getIosCpu());
+
+    return new ImmutableList.Builder<String>()
         .add("-F", AppleToolchain.sdkFrameworkDir(platform, appleConfiguration))
         // As of sdk8.1, XCTest is in a base Framework dir
         .add("-F", AppleToolchain.platformDeveloperFrameworkDir(appleConfiguration))
         // Add custom (non-SDK) framework search paths. For each framework foo/bar.framework,
         // include "foo" as a search path.
-        .addAll(Interspersing.beforeEach(
-            "-F",
-            PathFragment.safePathStrings(uniqueParentDirectories(provider.get(FRAMEWORK_DIR)))))
+        .addAll(
+            Interspersing.beforeEach(
+                "-F",
+                PathFragment.safePathStrings(uniqueParentDirectories(provider.get(FRAMEWORK_DIR)))))
         .build();
   }
 

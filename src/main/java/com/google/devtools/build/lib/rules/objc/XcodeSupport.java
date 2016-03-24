@@ -41,6 +41,11 @@ import java.util.List;
  * Support for Objc rule types that export an Xcode provider or generate xcode project files.
  *
  * <p>Methods on this class can be called in any order without impacting the result.
+ *
+ * <p>These objects should not outlast the analysis phase. Do not pass them to {@link Action}
+ * objects or other persistent objects. There are internal tests to ensure that XcodeSupport objects
+ * are not persisted that check the name of this class, so update those tests if you change this
+ * class's name.
  */
 public final class XcodeSupport {
 
@@ -225,46 +230,71 @@ public final class XcodeSupport {
         .build(ruleContext));
   }
 
-  private ByteSource xcodegenControlFileBytes(final XcodeProvider.Project project)
-      throws InterruptedException {
-    final Artifact pbxproj = ruleContext.getImplicitOutputArtifact(XcodeSupport.PBXPROJ);
-    final ObjcConfiguration objcConfiguration = ObjcRuleClasses.objcConfiguration(ruleContext);
-    final AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
-    return new ByteSource() {
-      @Override
-      public InputStream openStream() {
-        XcodeGenProtos.Control.Builder builder = XcodeGenProtos.Control.newBuilder();
-        String workspaceRoot = objcConfiguration.getXcodeWorkspaceRoot();
-        if (workspaceRoot != null) {
-          builder.setWorkspaceRoot(workspaceRoot);
-        }
+  /**
+   * Static class to avoid keeping references to configurations and this XcodeSupport object during
+   * execution.
+   */
+  private static class XcodegenControlFileBytes extends ByteSource {
+    private final XcodeProvider.Project project;
+    private final Artifact pbxproj;
+    private final String workspaceRoot;
+    private final List<String> appleCpus;
+    private final String minimumOs;
+    private final boolean generateDebugSymbols;
 
-        List<String> multiCpus = appleConfiguration.getIosMultiCpus();
-        if (multiCpus.isEmpty()) {
-          builder.addCpuArchitecture(appleConfiguration.getIosCpu());
-        } else {
-          builder.addAllCpuArchitecture(multiCpus);
-        }
-
-        return builder
-            .setPbxproj(pbxproj.getExecPathString())
-            .addAllTarget(project.targets())
-            .addBuildSetting(
-                XcodeGenProtos.XcodeprojBuildSetting.newBuilder()
-                    .setName("IPHONEOS_DEPLOYMENT_TARGET")
-                    .setValue(objcConfiguration.getMinimumOs().toString())
-                    .build())
-            .addBuildSetting(
-                XcodeGenProtos.XcodeprojBuildSetting.newBuilder()
-                    .setName("DEBUG_INFORMATION_FORMAT")
-                    .setValue(
-                        objcConfiguration.generateDebugSymbols() ? "dwarf-with-dsym" : "dwarf")
-                    .build())
-            .build()
-            .toByteString()
-            .newInput();
+    XcodegenControlFileBytes(
+        ObjcConfiguration objcConfiguration,
+        AppleConfiguration appleConfiguration,
+        Project project,
+        Artifact pbxproj) {
+      this.project = project;
+      this.pbxproj = pbxproj;
+      this.workspaceRoot = objcConfiguration.getXcodeWorkspaceRoot();
+      List<String> multiCpus = appleConfiguration.getIosMultiCpus();
+      if (multiCpus.isEmpty()) {
+        this.appleCpus = ImmutableList.of(appleConfiguration.getIosCpu());
+      } else {
+        this.appleCpus = multiCpus;
       }
-    };
+      this.minimumOs = objcConfiguration.getMinimumOs().toString();
+      this.generateDebugSymbols = objcConfiguration.generateDebugSymbols();
+    }
+
+    @Override
+    public InputStream openStream() {
+      XcodeGenProtos.Control.Builder builder = XcodeGenProtos.Control.newBuilder();
+      if (workspaceRoot != null) {
+        builder.setWorkspaceRoot(workspaceRoot);
+      }
+
+      builder.addAllCpuArchitecture(appleCpus);
+
+      return builder
+          .setPbxproj(pbxproj.getExecPathString())
+          .addAllTarget(project.targets())
+          .addBuildSetting(
+              XcodeGenProtos.XcodeprojBuildSetting.newBuilder()
+                  .setName("IPHONEOS_DEPLOYMENT_TARGET")
+                  .setValue(minimumOs)
+                  .build())
+          .addBuildSetting(
+              XcodeGenProtos.XcodeprojBuildSetting.newBuilder()
+                  .setName("DEBUG_INFORMATION_FORMAT")
+                  .setValue(generateDebugSymbols ? "dwarf-with-dsym" : "dwarf")
+                  .build())
+          .build()
+          .toByteString()
+          .newInput();
+    }
+  }
+
+  private ByteSource xcodegenControlFileBytes(XcodeProvider.Project project)
+      throws InterruptedException {
+    return new XcodegenControlFileBytes(
+        ObjcRuleClasses.objcConfiguration(ruleContext),
+        ruleContext.getFragment(AppleConfiguration.class),
+        project,
+        ruleContext.getImplicitOutputArtifact(XcodeSupport.PBXPROJ));
   }
 
   /**

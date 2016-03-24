@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.bazel.repository.skylark;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.fail;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
@@ -24,6 +25,8 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFactory;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.packages.BuildFileContainsErrorsException;
+import com.google.devtools.build.lib.packages.NoSuchPackageException;
 import com.google.devtools.build.lib.packages.util.MockCcSupport;
 import com.google.devtools.build.lib.packages.util.MockToolsConfig;
 import com.google.devtools.build.lib.rules.repository.LocalRepositoryFunction;
@@ -152,8 +155,8 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
     scratch.file("/repo2/BUILD", "filegroup(name='bar', srcs=['bar.txt'], path='foo')");
     scratch.file(
         "def.bzl",
-        "def _impl(ctx):",
-        "  ctx.symlink(ctx.attr.path, '')",
+        "def _impl(repository_ctx):",
+        "  repository_ctx.symlink(repository_ctx.attr.path, '')",
         "",
         "repo = repository_rule(",
         "    implementation=_impl,",
@@ -177,9 +180,9 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
     scratch.file("/repo2/WORKSPACE");
     scratch.file(
         "def.bzl",
-        "def _impl(ctx):",
-        "  ctx.symlink(Label('@repo2//:bar.txt'), 'BUILD')",
-        "  ctx.file('foo.txt', 'foo')",
+        "def _impl(repository_ctx):",
+        "  repository_ctx.symlink(Label('@repo2//:bar.txt'), 'BUILD')",
+        "  repository_ctx.file('foo.txt', 'foo')",
         "",
         "repo = repository_rule(",
         "    implementation=_impl,",
@@ -203,9 +206,10 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
     scratch.file("/repo2/WORKSPACE");
     scratch.file(
         "def.bzl",
-        "def _impl(ctx):",
-        "  ctx.template('BUILD', Label('@repo2//:bar.txt'), {'{target}': 'bar', '{path}': 'foo'})",
-        "  ctx.file('foo.txt', 'foo')",
+        "def _impl(repository_ctx):",
+        "  repository_ctx.template('BUILD', Label('@repo2//:bar.txt'), "
+            + "{'{target}': 'bar', '{path}': 'foo'})",
+        "  repository_ctx.file('foo.txt', 'foo')",
         "",
         "repo = repository_rule(",
         "    implementation=_impl,",
@@ -220,5 +224,105 @@ public class SkylarkRepositoryIntegrationTest extends BuildViewTestCase {
     ConfiguredTarget target = getConfiguredTarget("@foo//:bar");
     Object path = target.getTarget().getAssociatedRule().getAttributeContainer().getAttr("path");
     assertThat(path).isEqualTo("foo");
+  }
+
+  @Test
+  public void testSkylarkRepositoryName() throws Exception {
+    // Variation of the template rule to test the repository_ctx.name field.
+    scratch.file("/repo2/bar.txt", "filegroup(name='bar', srcs=['foo.txt'], path='{path}')");
+    scratch.file("/repo2/BUILD");
+    scratch.file("/repo2/WORKSPACE");
+    scratch.file(
+        "def.bzl",
+        "def _impl(repository_ctx):",
+        "  repository_ctx.template('BUILD', Label('@repo2//:bar.txt'), "
+            + "{'{path}': repository_ctx.name})",
+        "  repository_ctx.file('foo.txt', 'foo')",
+        "",
+        "repo = repository_rule(",
+        "    implementation=_impl,",
+        "    local=True)");
+    scratch.file(rootDirectory.getRelative("BUILD").getPathString());
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "local_repository(name='repo2', path='/repo2')",
+        "load('//:def.bzl', 'repo')",
+        "repo(name='foobar')");
+    invalidatePackages();
+    ConfiguredTarget target = getConfiguredTarget("@foobar//:bar");
+    Object path = target.getTarget().getAssociatedRule().getAttributeContainer().getAttr("path");
+    assertThat(path).isEqualTo("foobar");
+  }
+
+  @Test
+  public void testCycleErrorWhenCallingRandomTarget() throws Exception {
+    reporter.removeHandler(failFastHandler);
+    scratch.file("/repo2/data.txt", "data");
+    scratch.file("/repo2/BUILD", "exports_files_(['data.txt'])");
+    scratch.file("/repo2/def.bzl", "def macro():", "  print('bleh')");
+    scratch.file("/repo2/WORKSPACE");
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "load('@foo//:def.bzl', 'repo')",
+        "repo(name='foobar')",
+        "local_repository(name='foo', path='/repo2')");
+    try {
+      invalidatePackages();
+      getTarget("@foobar//:data.txt");
+      fail();
+    } catch (BuildFileContainsErrorsException e) {
+      // This is expected
+    }
+    assertDoesNotContainEvent("cycle");
+    assertContainsEvent("Maybe repository 'foo' was defined later in your WORKSPACE file?");
+    assertContainsEvent("Failed to load Skylark extension '@foo//:def.bzl'.");
+  }
+
+  @Test
+  public void testCycleErrorWhenCallingCycleTarget() throws Exception {
+    reporter.removeHandler(failFastHandler);
+    scratch.file("/repo2/data.txt", "data");
+    scratch.file("/repo2/BUILD", "exports_files_(['data.txt'])");
+    scratch.file("/repo2/def.bzl", "def macro():", "  print('bleh')");
+    scratch.file("/repo2/WORKSPACE");
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "load('@foo//:def.bzl', 'repo')",
+        "repo(name='foobar')",
+        "local_repository(name='foo', path='/repo2')");
+    try {
+      invalidatePackages();
+      getTarget("@foo//:data.txt");
+      fail();
+    } catch (BuildFileContainsErrorsException e) {
+      // This is expected
+    }
+    assertDoesNotContainEvent("cycle");
+    assertContainsEvent("Maybe repository 'foo' was defined later in your WORKSPACE file?");
+    assertContainsEvent("Failed to load Skylark extension '@foo//:def.bzl'.");
+  }
+
+  @Test
+  public void testLoadDoesNotHideWorkspaceError() throws Exception {
+    reporter.removeHandler(failFastHandler);
+    scratch.file("/repo2/data.txt", "data");
+    scratch.file("/repo2/BUILD", "exports_files_(['data.txt'])");
+    scratch.file("/repo2/def.bzl", "def macro():", "  print('bleh')");
+    scratch.file("/repo2/WORKSPACE");
+    scratch.overwriteFile(
+        rootDirectory.getRelative("WORKSPACE").getPathString(),
+        "local_repository(name='bleh')",
+        "local_repository(name='foo', path='/repo2')",
+        "load('@foo//:def.bzl', 'repo')",
+        "repo(name='foobar')");
+    try {
+      invalidatePackages();
+      getTarget("@foo//:data.txt");
+      fail();
+    } catch (NoSuchPackageException e) {
+      // This is expected
+      assertThat(e.getMessage()).contains("Could not load //external package");
+    }
+    assertContainsEvent("missing value for mandatory attribute 'path' in 'local_repository' rule");
   }
 }

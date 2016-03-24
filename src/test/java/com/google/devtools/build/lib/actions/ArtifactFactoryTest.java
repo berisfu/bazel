@@ -41,6 +41,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import javax.annotation.Nullable;
+
 /**
  * Tests {@link ArtifactFactory}. Also see {@link ArtifactTest} for a test
  * of individual artifacts.
@@ -79,11 +81,11 @@ public class ArtifactFactoryTest {
     outRoot = Root.asDerivedRoot(execRoot, execRoot.getRelative("out-root/x/bin"));
 
     fooPath = new PathFragment("foo");
-    fooPackage = PackageIdentifier.createInDefaultRepo(fooPath);
+    fooPackage = PackageIdentifier.createInMainRepo(fooPath);
     fooRelative = fooPath.getRelative("foosource.txt");
 
     barPath = new PathFragment("foo/bar");
-    barPackage = PackageIdentifier.createInDefaultRepo(barPath);
+    barPackage = PackageIdentifier.createInMainRepo(barPath);
     barRelative = barPath.getRelative("barsource.txt");
 
     alienPath = new PathFragment("external/alien");
@@ -152,7 +154,7 @@ public class ArtifactFactoryTest {
     // We need a package in the root directory to make every exec path (even one with up-level
     // references) be in a package.
     Map<PackageIdentifier, Root> packageRoots = ImmutableMap.of(
-        PackageIdentifier.createInDefaultRepo(new PathFragment("")), clientRoot);
+        PackageIdentifier.createInMainRepo(new PathFragment("")), clientRoot);
     artifactFactory.setPackageRoots(packageRoots);
     PathFragment outsideWorkspace = new PathFragment("../foo");
     PathFragment insideWorkspace =
@@ -249,6 +251,13 @@ public class ArtifactFactoryTest {
         }
       }
       return result;
+    }
+    
+    @Override
+    @Nullable
+    public Map<PathFragment, Root> findPackageRoots(Iterable<PathFragment> execPaths)
+        throws PackageRootResolutionException {
+      return null; // unused
     }
   }
 }

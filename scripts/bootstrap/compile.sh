@@ -199,7 +199,29 @@ stdout="$1"
 stderr="$2"
 shift 2
 
-"$@" 2>"$stderr" >"$stdout"
+if [ "$stdout" = "-" ]
+then
+  if [ "$stderr" = "-" ]
+  then
+    "$@"
+    exit $?
+  else
+    "$@" 2>"$stderr"
+    exit $?
+  fi
+else
+  if [ "$stderr" = "-" ]
+  then
+    "$@" >"$stdout"
+    exit $?
+  else
+    "$@" 2>"$stderr" >"$stdout"
+    exit $?
+  fi
+fi
+
+
+"$@"
 exit $?
 EOF
 chmod 0755 ${ARCHIVE_DIR}/_embedded_binaries/process-wrapper${EXE_EXT}
@@ -226,7 +248,7 @@ function bootstrap_build() {
       build \
       --ignore_unsupported_sandboxing \
       --startup_time=329 --extract_data_time=523 \
-      --rc_source=/dev/null --isatty=1 --terminal_columns=97 \
+      --rc_source=/dev/null --isatty=1 \
       --ignore_client_env \
       --client_cwd=${PWD} \
       "${@}"

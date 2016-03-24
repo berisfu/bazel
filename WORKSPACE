@@ -1,16 +1,16 @@
-load("/tools/build_defs/d/d", "d_repositories")
-load("/tools/build_defs/dotnet/csharp", "csharp_repositories")
 load("/tools/build_defs/jsonnet/jsonnet", "jsonnet_repositories")
-load("/tools/build_defs/sass/sass", "sass_repositories")
-load("/tools/build_rules/go/def", "go_repositories")
 load("/tools/build_rules/rust/rust", "rust_repositories")
 
-csharp_repositories()
-d_repositories()
-go_repositories()
 jsonnet_repositories()
 rust_repositories()
-sass_repositories()
+
+# Protobuf expects an //external:python_headers label which would contain the
+# Python headers if fast Python protos is enabled. Since we are not using fast
+# Python protos, bind python_headers to a dummy target.
+bind(
+    name = "python_headers",
+    actual = "//:dummy",
+)
 
 # Bind to dummy targets if no android SDK/NDK is present.
 bind(

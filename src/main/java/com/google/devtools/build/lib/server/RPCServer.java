@@ -14,8 +14,6 @@
 
 package com.google.devtools.build.lib.server;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
@@ -157,44 +155,45 @@ public final class RPCServer {
     final Thread mainThread = Thread.currentThread();
     final Object interruptLock = new Object();
 
-    InterruptSignalHandler sigintHandler = new InterruptSignalHandler() {
-        @Override
-        public void run() {
-          LOG.severe("User interrupt");
+    InterruptSignalHandler sigintHandler =
+        new InterruptSignalHandler() {
+          @Override
+          protected void onSignal() {
+            LOG.severe("User interrupt");
 
-          // Only interrupt during actions - otherwise we may end up setting the interrupt bit
-          // at the end of a build and responding to it at the beginning of the subsequent build.
-          synchronized (interruptLock) {
-            if (allowingInterrupt.get()) {
-              mainThread.interrupt();
-            }
-          }
-
-          Runnable interruptWatcher = new Runnable() {
-            @Override
-            public void run() {
-              try {
-                long originalCmd = cmdNum.get();
-                Thread.sleep(10 * 1000);
-                if (inAction.get() && cmdNum.get() == originalCmd) {
-                  // We're still operating on the same command.
-                  // Interrupt took too long.
-                  ThreadUtils.warnAboutSlowInterrupt();
-                }
-              } catch (InterruptedException e) {
-                // Ignore.
+            // Only interrupt during actions - otherwise we may end up setting the interrupt bit
+            // at the end of a build and responding to it at the beginning of the subsequent build.
+            synchronized (interruptLock) {
+              if (allowingInterrupt.get()) {
+                mainThread.interrupt();
               }
             }
-          };
 
-          if (inAction.get()) {
-            Thread interruptWatcherThread =
-                new Thread(interruptWatcher, "interrupt-watcher-" + cmdNum);
-            interruptWatcherThread.setDaemon(true);
-            interruptWatcherThread.start();
+            if (inAction.get()) {
+              Runnable interruptWatcher =
+                  new Runnable() {
+                    @Override
+                    public void run() {
+                      try {
+                        long originalCmd = cmdNum.get();
+                        Thread.sleep(10 * 1000);
+                        if (inAction.get() && cmdNum.get() == originalCmd) {
+                          // We're still operating on the same command.
+                          // Interrupt took too long.
+                          ThreadUtils.warnAboutSlowInterrupt();
+                        }
+                      } catch (InterruptedException e) {
+                        // Ignore.
+                      }
+                    }
+                  };
+              Thread interruptWatcherThread =
+                  new Thread(interruptWatcher, "interrupt-watcher-" + cmdNum);
+              interruptWatcherThread.setDaemon(true);
+              interruptWatcherThread.start();
+            }
           }
-        }
-      };
+        };
 
     try {
       while (!lameDuck) {
@@ -426,10 +425,15 @@ public final class RPCServer {
    * blaze.cc) to interface with Unix APIs.
    */
   private static List<String> readRequest(InputStream input) throws IOException {
-    byte[] inputBytes = ByteStreams.toByteArray(input);
-    if (inputBytes.length == 0) {
-      return null;
-    }
+    byte[] sizeBuffer = new byte[4];
+    ByteStreams.readFully(input, sizeBuffer);
+    int size = ((sizeBuffer[0] & 0xff) << 24)
+        + ((sizeBuffer[1] & 0xff) << 16)
+        + ((sizeBuffer[2] & 0xff) << 8)
+        + (sizeBuffer[3] & 0xff);
+    byte[] inputBytes = new byte[size];
+    ByteStreams.readFully(input, inputBytes);
+
     String s = new String(inputBytes, Charset.defaultCharset());
     return ImmutableList.copyOf(NULLTERMINATOR_SPLITTER.split(s));
   }
@@ -521,7 +525,10 @@ public final class RPCServer {
       // exit code.
       flushOutErr();
       try {
-        controlChannel.write(("" + exitStatus + "\n").getBytes(UTF_8));
+        controlChannel.write((exitStatus >> 24) & 0xff);
+        controlChannel.write((exitStatus >> 16) & 0xff);
+        controlChannel.write((exitStatus >> 8) & 0xff);
+        controlChannel.write(exitStatus & 0xff);
         controlChannel.flush();
         LOG.info("" + exitStatus);
       } catch (IOException ignored) {

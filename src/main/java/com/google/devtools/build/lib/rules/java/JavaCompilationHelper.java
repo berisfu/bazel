@@ -162,7 +162,7 @@ public final class JavaCompilationHelper extends BaseJavaCompilationHelper {
   }
 
   /** Returns the bootclasspath explicit set in attributes if present, or else the default. */
-  private ImmutableList<Artifact> getBootclasspathOrDefault() {
+  public ImmutableList<Artifact> getBootclasspathOrDefault() {
     JavaTargetAttributes attributes = getAttributes();
     if (!attributes.getBootClassPath().isEmpty()) {
       return attributes.getBootClassPath();
@@ -279,6 +279,8 @@ public final class JavaCompilationHelper extends BaseJavaCompilationHelper {
     builder.addDirectJars(attributes.getDirectJars());
     builder.setRuleKind(attributes.getRuleKind());
     builder.setTargetLabel(attributes.getTargetLabel());
+    builder.setJavaBaseInputs(getHostJavabaseInputsNonStatic(ruleContext));
+    builder.setJavacJar(getLangtoolsJar());
     builder.build();
 
     artifactBuilder.setCompileTimeDependencies(headerDeps);
@@ -423,8 +425,7 @@ public final class JavaCompilationHelper extends BaseJavaCompilationHelper {
     builder.setClassDirectory(classDir(resourceJar));
     builder.setJavaBuilderJar(getJavaBuilderJar());
     builder.setJavacOpts(getDefaultJavacOptsFromRule(getRuleContext()));
-    builder.setJavacJvmOpts(ImmutableList.copyOf(javaToolchain.getJavacOptions()));
-    builder.setJavacJvmOpts(ImmutableList.copyOf(javaToolchain.getJavacJvmOptions()));
+    builder.setJavacJvmOpts(javaToolchain.getJavacJvmOptions());
     getAnalysisEnvironment().registerAction(builder.build());
     return resourceJar;
   }
@@ -626,9 +627,10 @@ public final class JavaCompilationHelper extends BaseJavaCompilationHelper {
    * @return a list of options to provide to javac
    */
   private static ImmutableList<String> getDefaultJavacOptsFromRule(RuleContext ruleContext) {
-    return ImmutableList.copyOf(Iterables.concat(
-        JavaToolchainProvider.fromRuleContext(ruleContext).getJavacJvmOptions(),
-        ruleContext.getTokenizedStringListAttr("javacopts")));
+    return ImmutableList.copyOf(
+        Iterables.concat(
+            JavaToolchainProvider.fromRuleContext(ruleContext).getJavacOptions(),
+            ruleContext.getTokenizedStringListAttr("javacopts")));
   }
 
   public void setTranslations(Collection<Artifact> translations) {

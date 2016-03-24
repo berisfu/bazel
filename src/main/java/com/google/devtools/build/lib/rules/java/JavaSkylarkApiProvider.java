@@ -28,7 +28,9 @@ import com.google.devtools.build.lib.skylarkinterface.SkylarkModule;
  * simple and stable interface for Skylark users.
  */
 @SkylarkModule(
-    name = "JavaSkylarkApiProvider", doc = "Provides access to information about Java rules")
+    name = "JavaSkylarkApiProvider",
+    doc = "Provides access to information about Java rules. Every Java-related target provides "
+    + "this struct, accessible as a 'java' field on a Target struct.")
 public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
   /** The name of the field in Skylark used to access this class. */
   public static final String NAME = "java";
@@ -86,7 +88,12 @@ public final class JavaSkylarkApiProvider extends SkylarkApiProvider {
     doc = "Returns transitive set of labels that are being exported from this rule."
   )
   public NestedSet<Label> getTransitiveExports() {
-    return getInfo().getProvider(JavaExportsProvider.class).getTransitiveExports();
+    JavaExportsProvider provider = getInfo().getProvider(JavaExportsProvider.class);
+    if (provider != null) {
+      return provider.getTransitiveExports();
+    } else {
+      return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
+    }
   }
 
   @SkylarkCallable(

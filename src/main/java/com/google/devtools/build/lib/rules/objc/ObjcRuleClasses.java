@@ -52,7 +52,6 @@ import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.apple.AppleToolchain.RequiresXcodeConfigRule;
-import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.Platform;
 import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileType;
@@ -69,9 +68,6 @@ public class ObjcRuleClasses {
   static final String DSYMUTIL = "dsymutil";
   static final String LIPO = "lipo";
   static final String STRIP = "strip";
-
-  private static final DottedVersion MIN_LAUNCH_STORYBOARD_OS_VERSION =
-      DottedVersion.fromString("8.0");
 
   private ObjcRuleClasses() {
     throw new UnsupportedOperationException("static-only");
@@ -135,16 +131,37 @@ public class ObjcRuleClasses {
       new SdkFramework("Foundation"), new SdkFramework("UIKit"));
 
   /**
-   * Creates a new spawn action builder that will ultimately use part of the apple toolchain
-   * using the xcrun binary. Such a spawn action is special in that, in order to run, it requires
-   * both a darwin architecture and a collection of environment variables which contain
-   * information about the target and host architectures.
+   * Creates a new spawn action builder with apple environment variables set that are typically
+   * needed by the apple toolchain. This should be used to start to build spawn actions that, in
+   * order to run, require both a darwin architecture and a collection of environment variables
+   * which contain information about the target and host architectures. This implicitly
+   * assumes that this action is targeting ios platforms, and that
+   * {@link AppleConfiguration#getIosCpu()} is the source of truth for their target architecture.
+   * 
+   * @deprecated use {@link #spawnAppleEnvActionBuilder(RuleContext, Platform)} instead
    */
-  static SpawnAction.Builder spawnXcrunActionBuilder(RuleContext ruleContext) {
+  // TODO(cparsons): Refactor callers to use the alternate method. Callers should be aware
+  // of their effective Platform.
+  @Deprecated
+  static SpawnAction.Builder spawnAppleEnvActionBuilder(RuleContext ruleContext) {
+    AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
+
+    return spawnAppleEnvActionBuilder(ruleContext,
+        Platform.forIosArch(appleConfiguration.getIosCpu()));
+  }
+
+  /**
+   * Creates a new spawn action builder with apple environment variables set that are typically
+   * needed by the apple toolchain. This should be used to start to build spawn actions that, in
+   * order to run, require both a darwin architecture and a collection of environment variables
+   * which contain information about the target and host architectures.
+   */
+  static SpawnAction.Builder spawnAppleEnvActionBuilder(RuleContext ruleContext,
+      Platform targetPlatform) {
     AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
 
     ImmutableMap.Builder<String, String> envBuilder = ImmutableMap.<String, String>builder()
-        .putAll(appleConfiguration.getEnvironmentForIosAction())
+        .putAll(appleConfiguration.getTargetAppleEnvironment(targetPlatform))
         .putAll(appleConfiguration.getAppleHostSystemEnv());
 
     return spawnOnDarwinActionBuilder()
@@ -192,31 +209,6 @@ public class ObjcRuleClasses {
   }
 
   /**
-   * Returns {@code true} if the given rule context has a launch storyboard set and the given
-   * {@code iosMinimumOs} supports launch storyboards.
-   */
-  static boolean useLaunchStoryboard(RuleContext ruleContext, DottedVersion iosMinimumOs) {
-    if (!ruleContext.attributes().has("launch_storyboard", LABEL)) {
-      return false;
-    }
-    Artifact launchStoryboard =
-        ruleContext.getPrerequisiteArtifact("launch_storyboard", Mode.TARGET);
-    return launchStoryboard != null
-        && iosMinimumOs.compareTo(MIN_LAUNCH_STORYBOARD_OS_VERSION) >= 0;
-  }
-
-  /**
-   * Returns {@code true} if the given rule context has a launch storyboard set and its
-   * configuration (--ios_minimum_os) supports launch storyboards.
-   */
-  static boolean useLaunchStoryboard(RuleContext ruleContext) {
-    // We check launch_storyboard before retrieving the minimum os from the configuration,
-    // allowing this to be invoked even in contexts which do not depend on ObjcConfiguration.
-    return (ruleContext.attributes().has("launch_storyboard", LABEL)
-        && useLaunchStoryboard(ruleContext, objcConfiguration(ruleContext).getMinimumOs()));
-  }
-
-  /**
    * Attributes for {@code objc_*} rules that have compiler options.
    */
   public static class CoptsRule implements RuleDefinition {
@@ -242,37 +234,6 @@ public class ObjcRuleClasses {
     public Metadata getMetadata() {
       return RuleDefinition.Metadata.builder()
           .name("$objc_opts_rule")
-          .type(RuleClassType.ABSTRACT)
-          .build();
-    }
-  }
-
-  /**
-   * Common attributes for {@code objc_*} rules that use plists or copts.
-   */
-  public static class OptionsRule implements RuleDefinition {
-    @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
-      return builder
-          // TODO(bazel-team): Remove options and replace with: (a) a plists attribute (instead of
-          // the current infoplist, defined on all rules and propagated to the next bundling rule)
-          // and (b) a way to share copts e.g. by being able to include constants across package
-          // boundaries in bazel.
-          //
-          // For now the semantics of this attribute are: any copts in the options will be used if
-          // defined on a compiling/linking rule, otherwise ignored. Infoplists are merged in if
-          // defined on a bundling rule, otherwise ignored.
-          .add(attr("options", LABEL)
-              .undocumented("objc_options will be removed")
-              .allowedFileTypes()
-              .allowedRuleClasses("objc_options"))
-          .build();
-    }
-
-    @Override
-    public Metadata getMetadata() {
-      return RuleDefinition.Metadata.builder()
-          .name("$objc_options_rule")
           .type(RuleClassType.ABSTRACT)
           .build();
     }
@@ -668,7 +629,7 @@ public class ObjcRuleClasses {
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(defines) -->
            Extra <code>-D</code> flags to pass to the compiler. They should be in
            the form <code>KEY=VALUE</code> or simply <code>KEY</code> and are
-           passed not only the compiler for this target (as <code>copts</code>
+           passed not only to the compiler for this target (as <code>copts</code>
            are) but also to all <code>objc_</code> dependers of this target.
            Subject to <a href="make-variables.html">"Make variable"</a> substitution and
            <a href="common-definitions.html#sh-tokenization">Bourne shell tokenization</a>.
@@ -691,7 +652,6 @@ public class ObjcRuleClasses {
           .ancestors(
               BaseRuleClasses.RuleBase.class,
               CompileDependencyRule.class,
-              OptionsRule.class,
               CoptsRule.class,
               XcrunRule.class)
           .build();
@@ -734,19 +694,24 @@ public class ObjcRuleClasses {
     @Override
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
-          .add(attr("$dumpsyms", LABEL)
-          .cfg(HOST)
-          .singleArtifact()
-          .value(env.getToolsLabel("//tools/objc:dump_syms")))
-          .add(attr("$j2objc_dead_code_pruner", LABEL)
-              .allowedFileTypes(FileType.of(".py"))
-              .cfg(HOST)
-              .exec()
-              .singleArtifact()
-              .value(env.getToolsLabel("//tools/objc:j2objc_dead_code_pruner")))
-          .add(attr("$dummy_lib", LABEL)
-              .value(env.getToolsLabel("//tools/objc:dummy_lib")))
-        .build();
+          .add(
+              attr("$dumpsyms", LABEL)
+                  .cfg(HOST)
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/osx/crosstool:dump_syms")))
+          .add(
+              attr("$j2objc_dead_code_pruner", LABEL)
+                  .allowedFileTypes(FileType.of(".py"))
+                  .cfg(HOST)
+                  .exec()
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/objc:j2objc_dead_code_pruner")))
+          .add(attr("$dummy_lib", LABEL).value(env.getToolsLabel("//tools/objc:dummy_lib")))
+          /* <!-- #BLAZE_RULE($objc_linking_rule).ATTRIBUTE(linkopts) -->
+          Extra flags to pass to the linker. 
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("linkopts", STRING_LIST))
+          .build();
     }
     @Override
     public Metadata getMetadata() {
@@ -829,7 +794,6 @@ public class ObjcRuleClasses {
           .type(RuleClassType.ABSTRACT)
           .ancestors(
               AppleToolchain.RequiresXcodeConfigRule.class,
-              OptionsRule.class,
               ResourcesRule.class,
               ResourceToolsRule.class,
               XcrunRule.class)
@@ -858,6 +822,19 @@ public class ObjcRuleClasses {
           $(AppIdentifierPrefix) and $(CFBundleIdentifier).
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("entitlements", LABEL).legacyAllowAnyFileType())
+          .add(
+              attr(":extra_entitlements", LABEL)
+                  .singleArtifact()
+                  .value(
+                      new LateBoundLabel<BuildConfiguration>(ObjcConfiguration.class) {
+                        @Override
+                        public Label getDefault(
+                            Rule rule, AttributeMap attributes, BuildConfiguration configuration) {
+                          return configuration
+                              .getFragment(ObjcConfiguration.class)
+                              .getExtraEntitlements();
+                        }
+                      }))
           /* <!-- #BLAZE_RULE($objc_release_bundling_rule).ATTRIBUTE(provisioning_profile) -->
           The provisioning profile (.mobileprovision file) to use when bundling
           the application.

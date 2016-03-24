@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
+import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.ASSET_CATALOG;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BREAKPAD_FILE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BUNDLE_FILE;
@@ -90,6 +91,7 @@ import java.util.Set;
 // classes. Make sure to distinguish rule output (providers, runfiles, ...) from intermediate,
 // rule-internal information. Any provider created by a rule should not be read, only published.
 public final class ObjcCommon {
+  
   /**
    * Provides a way to access attributes that are common to all compilation rules.
    */
@@ -193,28 +195,17 @@ public final class ObjcCommon {
      * attribute does not exist or no values are specified.
      */
     public Iterable<String> copts() {
-      if (!ruleContext.attributes().has("copts", Type.STRING_LIST)) {
-        return ImmutableList.of();
-      }
       return ruleContext.getTokenizedStringListAttr("copts");
     }
 
     /**
-     * Returns any {@code copts} defined on an {@code objc_options} rule that is a dependency of
-     * this rule.
+     * Returns any values specified in this rule's {@code linkopts} attribute or an empty list if
+     * the attribute does not exist or no values are specified.
      */
-    public Iterable<String> optionsCopts() {
-      if (!ruleContext.attributes().has("options", BuildType.LABEL)) {
-        return ImmutableList.of();
-      }
-      OptionsProvider optionsProvider =
-          ruleContext.getPrerequisite("options", Mode.TARGET, OptionsProvider.class);
-      if (optionsProvider == null) {
-        return ImmutableList.of();
-      }
-      return optionsProvider.getCopts();
+    public Iterable<String> linkopts() {
+      return ruleContext.getTokenizedStringListAttr("linkopts");
     }
-
+    
     /**
      * The clang module maps of direct dependencies of this rule. These are needed to generate
      * this rule's module map.
@@ -555,7 +546,7 @@ public final class ObjcCommon {
             .addAll(STORYBOARD, attributes.storyboards());
       }
 
-      if (ObjcRuleClasses.useLaunchStoryboard(context)) {
+      if (useLaunchStoryboard(context)) {
         Artifact launchStoryboard =
             context.getPrerequisiteArtifact("launch_storyboard", Mode.TARGET);
         objcProvider.add(GENERAL_RESOURCE_FILE, launchStoryboard);
@@ -624,6 +615,18 @@ public final class ObjcCommon {
           .addAll(BREAKPAD_FILE, breakpadFile.asSet());
 
       return new ObjcCommon(objcProvider.build(), compilationArtifacts);
+    }
+
+    /**
+     * Returns {@code true} if the given rule context has a launch storyboard set.
+     */
+    private static boolean useLaunchStoryboard(RuleContext ruleContext) {
+      if (!ruleContext.attributes().has("launch_storyboard", LABEL)) {
+        return false;
+      }
+      Artifact launchStoryboard =
+          ruleContext.getPrerequisiteArtifact("launch_storyboard", Mode.TARGET);
+      return launchStoryboard != null;
     }
 
   }
@@ -775,5 +778,4 @@ public final class ObjcCommon {
     }
     return errors;
   }
-
 }

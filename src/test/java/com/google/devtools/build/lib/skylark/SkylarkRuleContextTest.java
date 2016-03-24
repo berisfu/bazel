@@ -56,6 +56,7 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
   public final void generateBuildFile() throws Exception {
     scratch.file(
         "foo/BUILD",
+        "package(features = ['-f1', 'f2', 'f3'])",
         "genrule(name = 'foo',",
         "  cmd = 'dummy_cmd',",
         "  srcs = ['a.txt', 'b.img'],",
@@ -79,7 +80,12 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
         "  srcs = ['a.go'],",
         "  outs = [ 'gl.a', 'gl.gcgox', ],",
         "  output_to_bindir = 1,",
-        ")");
+        ")",
+        "cc_library(name = 'cc_with_features',",
+        "           srcs = ['dummy.cc'],",
+        "           features = ['f1', '-f3'],",
+        ")"
+    );
   }
 
   private void setUpAttributeErrorTest() throws Exception {
@@ -418,7 +424,7 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
     assertNotNull(tic1.getProvider(JavaSourceJarsProvider.class));
     // Check an unimplemented provider too
     assertNull(tic1.getProvider(SkylarkProviders.class)
-            .getValue(PyCommon.PYTHON_SKYLARK_PROVIDER_NAME));
+        .getValue(PyCommon.PYTHON_SKYLARK_PROVIDER_NAME));
   }
 
   @Test
@@ -682,6 +688,14 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
   }
 
   @Test
+  public void testFeatures() throws Exception {
+    SkylarkRuleContext ruleContext = createRuleContext("//foo:cc_with_features");
+    Object result = evalRuleContextCode(ruleContext, "ruleContext.features");
+    assertThat((SkylarkList) result).containsExactly("f1", "f2");
+  }
+
+
+  @Test
   public void testHostConfiguration() throws Exception {
     SkylarkRuleContext ruleContext = createRuleContext("//foo:foo");
     Object result = evalRuleContextCode(ruleContext, "ruleContext.host_configuration");
@@ -758,24 +772,23 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
         "BUILD", "filegroup(name='dep')", "load('/my_rule', 'my_rule')", "my_rule(name='r')");
 
     invalidatePackages();
-    SkylarkRuleContext context = createRuleContext("@//:r");
+    SkylarkRuleContext context = createRuleContext("//:r");
     Label explicitDepLabel =
         (Label) evalRuleContextCode(context, "ruleContext.attr.explicit_dep.label");
-    assertThat(explicitDepLabel).isEqualTo(Label.parseAbsolute("@//:dep"));
+    assertThat(explicitDepLabel).isEqualTo(Label.parseAbsolute("//:dep"));
     Label implicitDepLabel =
         (Label) evalRuleContextCode(context, "ruleContext.attr._implicit_dep.label");
-    assertThat(implicitDepLabel).isEqualTo(Label.parseAbsolute("@//:dep"));
+    assertThat(implicitDepLabel).isEqualTo(Label.parseAbsolute("//:dep"));
     Label explicitDepListLabel =
         (Label) evalRuleContextCode(context, "ruleContext.attr.explicit_dep_list[0].label");
-    assertThat(explicitDepListLabel).isEqualTo(Label.parseAbsolute("@//:dep"));
+    assertThat(explicitDepListLabel).isEqualTo(Label.parseAbsolute("//:dep"));
     Label implicitDepListLabel =
         (Label) evalRuleContextCode(context, "ruleContext.attr._implicit_dep_list[0].label");
-    assertThat(implicitDepListLabel).isEqualTo(Label.parseAbsolute("@//:dep"));
+    assertThat(implicitDepListLabel).isEqualTo(Label.parseAbsolute("//:dep"));
   }
 
   @Test
   public void testRelativeLabelInExternalRepository() throws Exception {
-    scratch.file("BUILD");
     scratch.file("external_rule.bzl",
         "def _impl(ctx):",
         "  return",
@@ -783,6 +796,37 @@ public class SkylarkRuleContextTest extends SkylarkTestCase {
         "  implementation = _impl,",
         "  attrs = {",
         "    'internal_dep': attr.label(default = Label('//:dep'))",
+        "  }",
+        ")");
+
+    scratch.file("BUILD",
+        "filegroup(name='dep')");
+
+    scratch.file("/r/a/BUILD",
+        "load('/external_rule', 'external_rule')",
+        "external_rule(name='r')");
+
+    scratch.overwriteFile("WORKSPACE",
+        "local_repository(name='r', path='/r')");
+
+    invalidatePackages();
+    SkylarkRuleContext context = createRuleContext("@r//a:r");
+    Label depLabel = (Label) evalRuleContextCode(context, "ruleContext.attr.internal_dep.label");
+    assertThat(depLabel).isEqualTo(Label.parseAbsolute("//:dep"));
+  }
+
+  @Test
+  public void testCallerRelativeLabelInExternalRepository() throws Exception {
+    scratch.file("BUILD");
+    scratch.file("external_rule.bzl",
+        "def _impl(ctx):",
+        "  return",
+        "external_rule = rule(",
+        "  implementation = _impl,",
+        "  attrs = {",
+        "    'internal_dep': attr.label(",
+        "        default = Label('//:dep', relative_to_caller_repository = True)",
+        "    )",
         "  }",
         ")");
 

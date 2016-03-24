@@ -128,6 +128,7 @@ public class AndroidCommon {
   private JavaCompilationArgs javaCompilationArgs = JavaCompilationArgs.EMPTY_ARGS;
   private JavaCompilationArgs recursiveJavaCompilationArgs = JavaCompilationArgs.EMPTY_ARGS;
   private JackCompilationHelper jackCompilationHelper;
+  private ImmutableList<Artifact> jarsProducedForRuntime;
   private Artifact classJar;
   private Artifact iJar;
   private Artifact srcJar;
@@ -199,10 +200,12 @@ public class AndroidCommon {
       Artifact mainDexList) {
     List<String> args = new ArrayList<>();
     args.add("--dex");
-    // Add --no-locals to coverage builds. Otherwise local variable debug information is not
-    // preserved, which leads to runtime errors.
+    // Add --no-locals to coverage builds.  Older coverage tools don't correctly preserve local
+    // variable information in stack frame maps that are required since Java 7, so to avoid runtime
+    // errors we just don't add local variable info in the first place.  This may no longer be
+    // necessary, however, as long as we use a coverage tool that generates stack frame maps.
     if (ruleContext.getConfiguration().isCodeCoverageEnabled()) {
-      args.add("--no-locals");
+      args.add("--no-locals");  // TODO(bazel-team): Is this still needed?
     }
 
     // Multithreaded dex does not work when using --multi-dex.
@@ -365,7 +368,8 @@ public class AndroidCommon {
       Artifact resourcesJar,
       JavaCompilationArtifacts.Builder artifactsBuilder,
       JavaTargetAttributes.Builder attributes,
-      NestedSetBuilder<Artifact> filesBuilder) throws InterruptedException {
+      NestedSetBuilder<Artifact> filesBuilder,
+      ImmutableList.Builder<Artifact> jarsProducedForRuntime) throws InterruptedException {
     compileResourceJar(javaSemantics, resourcesJar);
     // Add the compiled resource jar to the classpath of the main compilation.
     attributes.addDirectJars(ImmutableList.of(resourceClassJar));
@@ -375,6 +379,7 @@ public class AndroidCommon {
     // Combined resource constants needs to come even before our own classes that may contain
     // local resource constants.
     artifactsBuilder.addRuntimeJar(resourceClassJar);
+    jarsProducedForRuntime.add(resourceClassJar);
     // Add the compiled resource jar as a declared output of the rule.
     filesBuilder.add(resourceSourceJar);
     filesBuilder.add(resourceClassJar);
@@ -407,6 +412,7 @@ public class AndroidCommon {
 
   private void createJarJarActions(
       JavaTargetAttributes.Builder attributes,
+      ImmutableList.Builder<Artifact> jarsProducedForRuntime,
       Iterable<ResourceContainer> resourceContainers,
       String originalPackage,
       Artifact binaryResourcesJar) {
@@ -443,6 +449,7 @@ public class AndroidCommon {
           .setProgressMessage("Repackaging jar")
           .setMnemonic("AndroidRepackageJar")
           .build(ruleContext));
+      jarsProducedForRuntime.add(resourcesJar);
     }
   }
 
@@ -474,25 +481,21 @@ public class AndroidCommon {
             AndroidSdkProvider.fromRuleContext(ruleContext).getAndroidJar()));
 
     JavaCompilationArtifacts.Builder artifactsBuilder = new JavaCompilationArtifacts.Builder();
+    ImmutableList.Builder<Artifact> jarsProducedForRuntime = ImmutableList.builder();
     NestedSetBuilder<Artifact> filesBuilder = NestedSetBuilder.<Artifact>stableOrder();
 
     Artifact resourcesJar = resourceApk.getResourceJavaSrcJar();
     if (resourcesJar != null) {
       filesBuilder.add(resourcesJar);
-      compileResources(javaSemantics, resourcesJar, artifactsBuilder, attributes, filesBuilder);
+      compileResources(javaSemantics, resourcesJar, artifactsBuilder, attributes, filesBuilder,
+          jarsProducedForRuntime);
       if (resourceApk.isLegacy()) {
         // Repackages the R.java for each dependency package and places the resultant jars before
         // the dependency libraries to ensure that the generated resource ids are correct.
-        createJarJarActions(attributes, resourceApk.getResourceDependencies().getResources(),
+        createJarJarActions(attributes, jarsProducedForRuntime,
+            resourceApk.getResourceDependencies().getResources(),
             resourceApk.getPrimaryResource().getJavaPackage(), resourceClassJar);
       }
-    }
-
-    if (disallowDepsWithoutSrcs(ruleContext.getRule().getRuleClass())
-        && ruleContext.attributes().get("srcs", BuildType.LABEL_LIST).isEmpty()
-        && ruleContext.attributes().get("idl_srcs", BuildType.LABEL_LIST).isEmpty()
-        && !ruleContext.attributes().get("deps", BuildType.LABEL_LIST).isEmpty()) {
-      ruleContext.attributeError("deps", "deps not allowed without srcs; move to exports?");
     }
 
     JavaCompilationHelper helper = initAttributes(attributes, javaSemantics);
@@ -517,19 +520,15 @@ public class AndroidCommon {
     if (ruleContext.hasErrors()) {
       return null;
     }
+    this.jarsProducedForRuntime = jarsProducedForRuntime.add(classJar).build();
     return helper.getAttributes();
-  }
-
-  private boolean disallowDepsWithoutSrcs(String ruleClass) {
-    return ruleClass.equals("android_library")
-        && !ruleContext.getFragment(AndroidConfiguration.class).allowSrcsLessAndroidLibraryDeps();
   }
 
   private JavaCompilationHelper initAttributes(
       JavaTargetAttributes.Builder attributes, JavaSemantics semantics) {
     JavaCompilationHelper helper = new JavaCompilationHelper(
         ruleContext, semantics, javaCommon.getJavacOpts(), attributes);
-    
+
     helper.addLibrariesToAttributes(javaCommon.targetsTreatedAsDeps(ClasspathType.COMPILE_ONLY));
     helper.addProvidersToAttributes(
         JavaCommon.compilationArgsFromSources(ruleContext), asNeverLink);
@@ -559,7 +558,10 @@ public class AndroidCommon {
         .setOutputArtifact(
             ruleContext.getImplicitOutputArtifact(AndroidRuleClasses.ANDROID_LIBRARY_JACK_FILE))
         // tools
-        .setAndroidSdk(sdk)
+        .setJackBinary(sdk.getJack())
+        .setJillBinary(sdk.getJill())
+        .setResourceExtractorBinary(sdk.getResourceExtractor())
+        .setJackBaseClasspath(sdk.getAndroidBaseClasspathForJack())
         // sources
         .addJavaSources(attributes.getSourceFiles())
         .addSourceJars(attributes.getSourceJars())
@@ -612,7 +614,7 @@ public class AndroidCommon {
     helper.createCompileActionWithInstrumentation(classJar, manifestProtoOutput, genSourceJar,
         outputDepsProto, javaArtifactsBuilder);
 
-    compileTimeDependencyArtifacts = 
+    compileTimeDependencyArtifacts =
         javaCommon.collectCompileTimeDependencyArtifacts(outputDepsProto);
     filesToBuild = filesBuilder.build();
 
@@ -623,7 +625,10 @@ public class AndroidCommon {
 
     javaCommon.setClassPathFragment(
         new ClasspathConfiguredFragment(
-            javaCommon.getJavaCompilationArtifacts(), attributes, asNeverLink));
+            javaCommon.getJavaCompilationArtifacts(),
+            attributes,
+            asNeverLink,
+            helper.getBootclasspathOrDefault()));
 
     transitiveNeverlinkLibraries = collectTransitiveNeverlinkLibraries(
         ruleContext,
@@ -640,7 +645,7 @@ public class AndroidCommon {
           true, asNeverLink, /* hasSources */ true);
     }
   }
-  
+
   public RuleConfiguredTargetBuilder addTransitiveInfoProviders(
       RuleConfiguredTargetBuilder builder,
       AndroidSemantics androidSemantics,
@@ -693,7 +698,7 @@ public class AndroidCommon {
             OutputGroupProvider.HIDDEN_TOP_LEVEL, collectHiddenTopLevelArtifacts(ruleContext))
         .addOutputGroup(JavaSemantics.SOURCE_JARS_OUTPUT_GROUP, transitiveSourceJars);
   }
-  
+
   private Runfiles getRunfiles() {
     // TODO(bazel-team): why return any Runfiles in the neverlink case?
     if (asNeverLink) {
@@ -767,9 +772,11 @@ public class AndroidCommon {
    */
   private JavaCompilationArgs collectJavaCompilationArgs(boolean recursive, boolean isNeverLink,
       boolean hasSrcs) {
-    Iterable<SourcesJavaCompilationArgsProvider> fromSrcs = 
+    boolean exportDeps = !hasSrcs
+        && ruleContext.getFragment(AndroidConfiguration.class).allowSrcsLessAndroidLibraryDeps();
+    Iterable<SourcesJavaCompilationArgsProvider> fromSrcs =
         ImmutableList.<SourcesJavaCompilationArgsProvider> of();
-    return javaCommon.collectJavaCompilationArgs(recursive, isNeverLink, fromSrcs, !hasSrcs);
+    return javaCommon.collectJavaCompilationArgs(recursive, isNeverLink, fromSrcs, exportDeps);
   }
 
   public ImmutableList<String> getJavacOpts() {
@@ -786,6 +793,15 @@ public class AndroidCommon {
 
   public ImmutableList<Artifact> getRuntimeJars() {
     return javaCommon.getJavaCompilationArtifacts().getRuntimeJars();
+  }
+
+  /**
+   * Returns Jars produced by this rule that may go into the runtime classpath.  By contrast
+   * {@link #getRuntimeJars()} returns the complete runtime classpath needed by this rule, including
+   * dependencies.
+   */
+  public ImmutableList<Artifact> getJarsProducedForRuntime() {
+    return jarsProducedForRuntime;
   }
 
   public Artifact getInstrumentedJar() {
@@ -831,6 +847,13 @@ public class AndroidCommon {
             CcLinkParamsProvider.TO_LINK_PARAMS);
       }
     };
+  }
+
+  /**
+   * Returns {@link AndroidConfiguration} in given context.
+   */
+  static AndroidConfiguration getAndroidConfig(RuleContext context) {
+    return context.getConfiguration().getFragment(AndroidConfiguration.class);
   }
 
   private NestedSet<Artifact> collectHiddenTopLevelArtifacts(RuleContext ruleContext) {

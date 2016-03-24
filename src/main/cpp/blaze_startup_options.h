@@ -28,8 +28,8 @@ using std::string;
 struct StartupOptions;
 
 // This class holds the parsed startup options for Blaze.
-// These options and their defaults must be kept in sync with those
-// in java/com/google/devtools/build/lib/blaze/BlazeServerStartupOptions.
+// These options and their defaults must be kept in sync with those in
+// src/main/java/com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java.
 // The latter are purely decorative (they affect the help message,
 // which displays the defaults).  The actual defaults are defined
 // in the constructor.
@@ -147,6 +147,8 @@ class BlazeStartupOptions {
   int max_idle_secs;
 
   bool oom_more_eagerly;
+
+  int oom_more_eagerly_threshold;
 
   // If true, Blaze will listen to OS-level file change notifications.
   bool watchfs;
